@@ -24,6 +24,9 @@ class PoseNet(nn.Module):
         ndim_spatial_norm_cond_dim: int,
         ndim_spatial_ctx: Optional[int],
         spatial_skip_token_embed: bool,
+        # PerspInfoEmbedderDense
+        num_pie_sample: int,
+        pie_fusion: str,
         # MANOPoseDetokenizer
         detok_joint_type: str,
     ):
@@ -40,7 +43,15 @@ class PoseNet(nn.Module):
         self.img_size = self.backbone.get_img_size()
         self.num_patch = self.backbone.get_num_patch()
 
-        # TODO: add PIE
+        # Perspective Information Embedder
+        assert pie_fusion in ["cls", "patch", "all"]
+        assert pie_fusion == "patch" or not drop_cls
+        self.num_pie_sample = num_pie_sample
+        self.pie_fusion = pie_fusion
+        self.persp_info_embedder = PerspInfoEmbedderDense(
+            hidden_size=self.hidden_size,
+            num_sample=self.num_pie_sample,
+        )
 
         # Spatial encoder
         self.query_tokens = nn.Parameter(
@@ -70,14 +81,33 @@ class PoseNet(nn.Module):
             joint_rep_type=detok_joint_type
         )
 
-    # TODO: add intri
-    def predict_pose(self, img: torch.Tensor):
+    # TODO: add intri, input spatial & temporal
+    def predict_pose(
+        self,
+        img: torch.Tensor,
+        bbox: torch.Tensor,
+        focal: torch.Tensor,
+        princpt: torch.Tensor,
+    ):
         batch_size = img.shape[0]
 
         # extract vision feature
         feats = self.backbone(img) # [b,l,d]
         if self.drop_cls:
             feats = feats[:, 1:]
+
+        # extract perspective feature
+        persp_feat = self.persp_info_embedder(
+            bbox=bbox,
+            focal=focal,
+            princpt=princpt,
+        )
+        if self.pie_fusion == "all":
+            feats += persp_feat[:, None]
+        if self.pie_fusion == "cls":
+            feats[:, 0] += persp_feat
+        if self.pie_fusion == "patch":
+            feats[:, 1:] += persp_feat[:, None]
 
         # extract hand feature
         query_tokens = self.query_tokens.expand(batch_size, -1, -1)

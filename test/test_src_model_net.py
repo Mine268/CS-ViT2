@@ -22,12 +22,18 @@ def test_PoseNet():
         ndim_spatial_ctx=768,
         spatial_skip_token_embed=False,
         #
+        num_pie_sample=16,
+        pie_fusion="cls",
+        #
         detok_joint_type="3"
     ).to("cuda:3")
 
     img = torch.randn(6, 3, 224, 224).to("cuda:3")
+    bbox = torch.randn(6, 4).to("cuda:3")
+    focal = torch.randn(6, 2).to("cuda:3")
+    princpt = torch.randn(6, 2).to("cuda:3")
 
-    pose, shape, trans = net.predict_pose(img)
+    pose, shape, trans = net.predict_pose(img, bbox, focal, princpt)
 
     assert tuple(pose.shape) == (6, 48)
     assert tuple(shape.shape) == (6, 10)

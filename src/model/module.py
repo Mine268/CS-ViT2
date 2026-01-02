@@ -11,9 +11,64 @@ import einops as eps
 from ..constant import *
 
 
-class PerspInfoEmbedder(nn.Module):
-    def __init__(self):
-        super(PerspInfoEmbedder, self).__init__()
+class PerspInfoEmbedderDense(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_sample: int,
+    ):
+        super(PerspInfoEmbedderDense, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.num_sample = num_sample
+
+        in_dim = self.num_sample ** 2 * 2
+        self.mlp = []
+        for _ in range(3):
+            self.mlp.extend([
+                nn.Linear(in_dim, self.hidden_size, bias=True),
+                nn.BatchNorm1d(self.hidden_size),
+                nn.ReLU(),
+            ])
+            in_dim = self.hidden_size
+        self.mlp = nn.Sequential(*self.mlp)
+
+    def forward(
+        self,
+        bbox: torch.Tensor,
+        focal: torch.Tensor,
+        princpt: torch.Tensor
+    ):
+        """
+        bbox: [b,4] xyxy
+        focal, princpt: [b,2]
+        """
+        grid = torch.linspace(
+            1 / self.num_sample * 0.5,
+            1 - 1 / self.num_sample * 0.5,
+            self.num_sample,
+            device=bbox.device,
+        )  # [p]
+        x_grid = (
+            bbox[:, 0:1] + (bbox[:, 2:3] - bbox[:, 0:1]) * grid[None, :]
+        )  # [b,p]
+        y_grid = (
+            bbox[:, 1:2] + (bbox[:, 3:4] - bbox[:, 1:2]) * grid[None, :]
+        )  # [b,p]
+        grid = torch.stack([
+            x_grid[:, :, None].expand(-1, -1, grid.shape[0]),
+            y_grid[:, None, :].expand(-1, grid.shape[0], -1),
+        ], dim=-1)# [b,p,p,2]
+
+        directions = (grid - princpt[:, None, None, :]) / focal[:, None, None, :]
+        directions = torch.cat([directions, torch.ones_like(directions[..., :1])], dim=-1)
+        directions = directions / torch.norm(directions, p="fro", dim=-1, keepdim=True)
+        directions = directions[..., :2]  # [b,p,p,2] discard z value
+
+        flatten = eps.rearrange(directions, "b p q d -> b (p q d)")
+        persp_feat = self.mlp(flatten)
+
+        return persp_feat
 
 
 class DinoBackbone(nn.Module):
