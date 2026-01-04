@@ -1,3 +1,6 @@
+import enum
+
+import numpy as np
 import torch.nn as nn
 
 from .module import *
@@ -5,8 +8,13 @@ from .hamer_module import *
 
 
 class PoseNet(nn.Module):
+    class Stage(enum.Enum):
+        STAGE1 = "stage1"
+        STAGE2 = "stage2"
+
     def __init__(
         self,
+        stage: Stage,
         # DinoBackbone
         backbone_str: str,
         img_size: Optional[int],
@@ -36,6 +44,7 @@ class PoseNet(nn.Module):
         detok_joint_type: str,
     ):
         super(PoseNet, self).__init__()
+        self.stage = stage
         # Image encoder
         self.backbone = DinoBackbone(
             backbone_str=backbone_str,
@@ -57,6 +66,15 @@ class PoseNet(nn.Module):
             hidden_size=self.hidden_size,
             num_sample=self.num_pie_sample,
         )
+
+        # MANO
+        self.register_buffer(
+            "J_regressor_mano",
+            torch.from_numpy(np.load(MANO_J_REGRESSOR_PATH)).type(torch.float32)
+        )
+        self.rmano_layer = smplx.create(MANO_ROOT, "mano", is_rhand=True, use_pca=False)
+        self.rmano_layer.requires_grad_(False)
+        self.rmano_layer.eval()
 
         # Spatial encoder
         self.query_tokens = nn.Parameter(
@@ -112,41 +130,13 @@ class PoseNet(nn.Module):
             joint_rep_type=detok_joint_type
         )
 
-    def predict_pose(
+    def extract_hand_feature(
         self,
         img: torch.Tensor,
         bbox: torch.Tensor,
         focal: torch.Tensor,
         princpt: torch.Tensor,
-        timestamp: Optional[torch.Tensor] = None
     ):
-        """
-        timestamp: None or [b,t]
-        """
-        assert (
-            len(img.shape) == 4
-            and len(bbox.shape) == 2
-            and len(focal.shape) == 2
-            and len(princpt.shape) == 2
-        ) or (
-            len(img.shape) == 5
-            and len(bbox.shape) == 3
-            and len(focal.shape) == 3
-            and len(princpt.shape) == 3
-            and timestamp is not None
-        )
-
-        is_temporal = timestamp is not None
-        batch_size = img.shape[0]
-        num_frame = img.shape[1] if is_temporal else None
-
-        # if temporal, flatten (b,t) into (b*t)
-        if is_temporal:
-            img = eps.rearrange(img, "b t c h w -> (b t) c h w")
-            bbox = eps.rearrange(bbox, "b t x -> (b t) x")
-            focal = eps.rearrange(focal, "b t f -> (b t) f")
-            princpt = eps.rearrange(princpt, "b t p -> (b t) p")
-
         # extract vision feature
         feats = self.backbone(img) # [b,l,d]
         if self.drop_cls:
@@ -178,12 +168,46 @@ class PoseNet(nn.Module):
         shape_token = shape_token.squeeze(dim=-2)
         trans_token = trans_token.squeeze(dim=-2)
 
+        return pose_token, shape_token, trans_token
+
+    def predict_mano_param(
+        self,
+        img: torch.Tensor,
+        bbox: torch.Tensor,
+        focal: torch.Tensor,
+        princpt: torch.Tensor,
+        timestamp: Optional[torch.Tensor] = None
+    ):
+        """
+        timestamp: None or [b,t]
+        """
+        assert (len(img.shape) == 5
+            and len(bbox.shape) == 3
+            and len(focal.shape) == 3
+            and len(princpt.shape) == 3
+        )
+
+        num_frame = img.shape[1]
+
+        img, bbox, focal, princpt = map(
+            lambda t: eps.rearrange(t, "b t ... -> (b t) ..."),
+            [img, bbox, focal, princpt]
+        )
+
+        # spatial encoding
+        pose_token, shape_token, trans_token = self.extract_hand_feature(
+            img=img,
+            bbox=bbox,
+            focal=focal,
+            princpt=princpt,
+        )
+
         # temporal decoding
-        if is_temporal:
-            pose_token, shape_token, trans_token = map(
-                lambda t: eps.rearrange(t, "(b t) d -> b t d", t=num_frame),
-                [pose_token, shape_token, trans_token]
-            )
+        pose_token, shape_token, trans_token = map(
+            lambda t: eps.rearrange(t, "(b t) d -> b t d", t=num_frame),
+            [pose_token, shape_token, trans_token]
+        )
+        if self.stage == PoseNet.Stage.STAGE2:
             pose_token = pose_token + self.pose_temporal_encoder(pose_token, timestamp)
             shape_token = shape_token + self.shape_temporal_encoder(shape_token, timestamp)
             trans_token = trans_token + self.trans_temporal_encoder(trans_token, timestamp)
@@ -193,3 +217,45 @@ class PoseNet(nn.Module):
         pose, shape, trans = self.mano_detokenizer(pose_token, shape_token, trans_token)
 
         return pose, shape, trans
+
+    def mano_to_pose(self, pose, shape, trans):
+        batch_size, _, _ = pose.shape
+        njoint_hand = self.J_regressor_mano.shape[0]
+
+        shape = eps.rearrange(shape, "b t d -> (b t) d")
+        pose = eps.rearrange(pose, "b t d -> (b t) d")
+
+        mano_output = self.rmano_layer(
+            betas=shape,
+            global_orient=pose[:, :3],
+            hand_pose=pose[:, 3:],
+            transl=torch.zeros(size=(pose.shape[0], 3), device=pose.device)
+        )
+
+        joints = torch.einsum(
+            "nvd,jv->njd",
+            mano_output.vertices, self.J_regressor_mano
+        )
+
+        # [B,T,V,3]
+        verts_cam = rearrange(
+            (mano_output.vertices - joints[:, :1]) * 1e3, # to mm
+            "(b t) v d -> b t v d", b=batch_size
+        ) + trans[:, :, None]
+        # [B,T,J,3]
+        joint_cam = rearrange(
+            (joints - joints[:, :1]) * 1e3,
+            "(b t) j d -> b t j d", b=batch_size, j=njoint_hand
+        ) + trans[:, :, None]
+
+        return joint_cam, verts_cam
+
+    def forward(
+        self,
+        img: torch.Tensor,
+        bbox: torch.Tensor,
+        focal: torch.Tensor,
+        princpt: torch.Tensor,
+        timestamp: torch.Tensor,
+    ):
+        pass
