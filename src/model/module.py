@@ -9,6 +9,61 @@ import smplx
 import einops as eps
 
 from ..constant import *
+from .hamer_module import TransformerCrossAttn, Attention, PreNorm, FeedForward, default
+
+
+class TRotionalPositionEmbedding(nn.Module):
+    def __init__(self, dim: int, multi_head: bool = False):
+        super(TRotionalPositionEmbedding, self).__init__()
+        assert dim % 2 == 0
+
+        self.dim = dim
+        self.multi_head = multi_head
+
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor = None):
+        """
+        Args:
+            x (Tensor): [batch, seq, dim], [batch, head, seq, dim]
+            t (Tensor): [batch, seq]
+        """
+        if t is None:
+            raise ValueError("t must be provided for 'trope' mode")
+
+        # Compute frequencies
+        # [batch, seq, d_model//2]
+        freqs = t.float().unsqueeze(-1) * self.inv_freq.unsqueeze(0)
+
+        # Apply RoPE
+        cos_vals = torch.cos(freqs)  # [batch, seq, d_model//2]
+        sin_vals = torch.sin(freqs)
+        if not self.multi_head:
+            x_rotated = self._apply_rope(x, cos_vals, sin_vals)
+        else:
+            cos_vals = cos_vals.unsqueeze(1)
+            sin_vals = sin_vals.unsqueeze(1)
+            x_rotated = self._apply_rope(x, cos_vals, sin_vals)
+
+        return x_rotated
+
+    def _apply_rope(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        """Applies RoPE to input tensor x using precomputed cos/sin values."""
+        # Reshape x to [batch, seq, d_model//2, 2]
+        x_reshaped = x.view(*x.shape[:-1], -1, 2)
+
+        # Split into components
+        x1, x2 = x_reshaped.unbind(dim=-1)
+
+        # Apply rotation
+        x1_rot = x1 * cos - x2 * sin
+        x2_rot = x1 * sin + x2 * cos
+
+        # Recombine and flatten
+        x_rotated = torch.stack([x1_rot, x2_rot], dim=-1)
+
+        return x_rotated.flatten(start_dim=-2)
 
 
 class PerspInfoEmbedderDense(nn.Module):
@@ -193,9 +248,165 @@ class DinoBackbone(nn.Module):
         return self.num_patch
 
 
+class TRoPECrossAttention(nn.Module):
+
+    def __init__(self, dim, context_dim=None, heads=8, dim_head=64, dropout=0.0):
+        super().__init__()
+        inner_dim = dim_head * heads
+        project_out = not (heads == 1 and dim_head == dim)
+
+        self.heads = heads
+        self.scale = dim_head**-0.5
+
+        self.attend = nn.Softmax(dim=-1)
+        self.dropout = nn.Dropout(dropout)
+
+        context_dim = default(context_dim, dim)
+        self.to_kv = nn.Linear(dim, inner_dim * 2, bias=False)
+        self.to_q = nn.Linear(dim, inner_dim, bias=False)
+
+        self.pe = TRotionalPositionEmbedding(dim_head, multi_head=bool(heads > 1))
+
+        self.to_out = (
+            nn.Sequential(nn.Linear(inner_dim, dim), nn.Dropout(dropout))
+            if project_out
+            else nn.Identity()
+        )
+
+    def forward(self, x, tq, tk, context=None):
+        """
+        x: [b n d]
+        context: [b m d]
+        tq: [b n]
+        tk: [b m]
+        """
+        context = default(context, x)
+        k, v = self.to_kv(context).chunk(2, dim=-1)
+        q = self.to_q(x)
+        q, k, v = map(lambda t: eps.rearrange(t, "b n (h d) -> b h n d", h=self.heads), [q, k, v])
+
+        q = self.pe(q, tq)
+        k = self.pe(k, tk)
+
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+
+        attn = self.attend(dots)
+        attn = self.dropout(attn)
+
+        out = torch.matmul(attn, v)
+        out = eps.rearrange(out, "b h n d -> b n (h d)")
+        return self.to_out(out)
+
+
+class TRoPETransformerCrossAttn(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        depth: int,
+        heads: int,
+        dim_head: int,
+        mlp_dim: int,
+        dropout: float = 0.0,
+        norm: str = "layer",
+        norm_cond_dim: int = -1,
+        context_dim: Optional[int] = None,
+    ):
+        super().__init__()
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            sa = Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout)
+            ca = TRoPECrossAttention(
+                dim, context_dim=context_dim, heads=heads, dim_head=dim_head, dropout=dropout
+            )
+            ff = FeedForward(dim, mlp_dim, dropout=dropout)
+            self.layers.append(
+                nn.ModuleList(
+                    [
+                        PreNorm(dim, sa, norm=norm, norm_cond_dim=norm_cond_dim),
+                        PreNorm(dim, ca, norm=norm, norm_cond_dim=norm_cond_dim),
+                        PreNorm(dim, ff, norm=norm, norm_cond_dim=norm_cond_dim),
+                    ]
+                )
+            )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        tq: torch.Tensor,
+        tk: torch.Tensor,
+        *args,
+        context=None,
+        context_list=None,
+    ):
+        if context_list is None:
+            context_list = [context] * len(self.layers)
+        if len(context_list) != len(self.layers):
+            raise ValueError(
+                f"len(context_list) != len(self.layers) ({len(context_list)} != {len(self.layers)})"
+            )
+
+        for i, (self_attn, cross_attn, ff) in enumerate(self.layers):
+            x = self_attn(x, *args) + x
+            x = cross_attn(x, *args, tq=tq, tk=tk, context=context_list[i]) + x
+            x = ff(x, *args) + x
+        return x
+
+
 class TemporalEncoder(nn.Module):
-    def __init__(self):
+    def __init__(
+        self,
+        dim: int,
+        num_head: int,
+        num_layer: int,
+        dropout: float,
+        trope_scalar: float = 20.0,
+        zero_linear: bool = True
+    ):
         super(TemporalEncoder, self).__init__()
+
+        self.dim = dim
+        self.trope_scalar = trope_scalar
+
+        self.pe = TRotionalPositionEmbedding(self.dim)
+        self.zero_linear = nn.Linear(self.dim, self.dim, bias=True)
+        self.cross_attn = TRoPETransformerCrossAttn(
+            dim=self.dim,
+            depth=num_layer,
+            heads=num_head,
+            dim_head=self.dim // num_head,
+            mlp_dim=self.dim * 2,
+            dropout=dropout,
+            norm="layer",
+            norm_cond_dim=-1,
+            context_dim=self.dim,
+        )
+
+        if zero_linear:
+            nn.init.zeros_(self.zero_linear.weight)
+            nn.init.zeros_(self.zero_linear.bias)
+
+    def forward(
+        self,
+        token: torch.Tensor,
+        timestamp: torch.Tensor
+    ):
+        """
+        token: [b,t,d]
+        timestamp: [b,t]
+        """
+        b, t, _ = token.shape
+
+        x = token[:, -1:]
+        ctx = token
+
+        timestamp /= self.trope_scalar
+        tq = timestamp[:, -1:]
+        tk = timestamp
+
+        y = self.cross_attn(x, tq, tk, context=ctx)
+        y = self.zero_linear(y)
+
+        return x + y
 
 
 class MANOPoseDetokenizer(nn.Module):

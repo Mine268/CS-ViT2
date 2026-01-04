@@ -12,7 +12,7 @@ class PoseNet(nn.Module):
         img_size: Optional[int],
         infusion_feats_lyr: List[int],
         drop_cls: bool,
-        # TransformerDecoder
+        # SpatialEncoder
         num_spatial_layer: int,
         num_spatial_head: int,
         ndim_spatial_mlp: int,
@@ -27,6 +27,11 @@ class PoseNet(nn.Module):
         # PerspInfoEmbedderDense
         num_pie_sample: int,
         pie_fusion: str,
+        # TemporalEncoder
+        num_temporal_head: int,
+        num_temporal_layer: int,
+        trope_scalar: float,
+        zero_linear: bool,
         # MANOPoseDetokenizer
         detok_joint_type: str,
     ):
@@ -75,21 +80,72 @@ class PoseNet(nn.Module):
             skip_token_embedding=spatial_skip_token_embed,
         )
 
+        # Temporal encoder
+        self.pose_temporal_encoder = TemporalEncoder(
+            dim=self.hidden_size,
+            num_head=num_temporal_head,
+            num_layer=num_temporal_layer,
+            dropout=prob_spatial_dropout,
+            trope_scalar=trope_scalar,
+            zero_linear=zero_linear,
+        )
+        self.shape_temporal_encoder = TemporalEncoder(
+            dim=self.hidden_size,
+            num_head=num_temporal_head,
+            num_layer=num_temporal_layer,
+            dropout=prob_spatial_dropout,
+            trope_scalar=trope_scalar,
+            zero_linear=zero_linear,
+        )
+        self.trans_temporal_encoder = TemporalEncoder(
+            dim=self.hidden_size,
+            num_head=num_temporal_head,
+            num_layer=num_temporal_layer,
+            dropout=prob_spatial_dropout,
+            trope_scalar=trope_scalar,
+            zero_linear=zero_linear,
+        )
+
         # MANO detokenizer
         self.mano_detokenizer = MANOPoseDetokenizer(
             dim=self.hidden_size,
             joint_rep_type=detok_joint_type
         )
 
-    # TODO: add intri, input spatial & temporal
     def predict_pose(
         self,
         img: torch.Tensor,
         bbox: torch.Tensor,
         focal: torch.Tensor,
         princpt: torch.Tensor,
+        timestamp: Optional[torch.Tensor] = None
     ):
+        """
+        timestamp: None or [b,t]
+        """
+        assert (
+            len(img.shape) == 4
+            and len(bbox.shape) == 2
+            and len(focal.shape) == 2
+            and len(princpt.shape) == 2
+        ) or (
+            len(img.shape) == 5
+            and len(bbox.shape) == 3
+            and len(focal.shape) == 3
+            and len(princpt.shape) == 3
+            and timestamp is not None
+        )
+
+        is_temporal = timestamp is not None
         batch_size = img.shape[0]
+        num_frame = img.shape[1] if is_temporal else None
+
+        # if temporal, flatten (b,t) into (b*t)
+        if is_temporal:
+            img = eps.rearrange(img, "b t c h w -> (b t) c h w")
+            bbox = eps.rearrange(bbox, "b t x -> (b t) x")
+            focal = eps.rearrange(focal, "b t f -> (b t) f")
+            princpt = eps.rearrange(princpt, "b t p -> (b t) p")
 
         # extract vision feature
         feats = self.backbone(img) # [b,l,d]
@@ -110,14 +166,30 @@ class PoseNet(nn.Module):
             feats[:, 1:] += persp_feat[:, None]
 
         # extract hand feature
-        query_tokens = self.query_tokens.expand(batch_size, -1, -1)
-        hand_feats = self.spatial_encoder(query_tokens, context=feats)
+        query_tokens = self.query_tokens.expand(img.shape[0], -1, -1)
+        hand_feats = self.spatial_encoder(query_tokens, context=feats) # [b,3,d] / [(bt),3,d]
+
+        # split into 3 seperate feature
+        # [b,d] / [(bt),d]
+        pose_token, shape_token, trans_token = torch.split(
+            hand_feats, split_size_or_sections=1, dim=-2
+        )
+        pose_token = pose_token.squeeze(dim=-2)
+        shape_token = shape_token.squeeze(dim=-2)
+        trans_token = trans_token.squeeze(dim=-2)
+
+        # temporal decoding
+        if is_temporal:
+            pose_token, shape_token, trans_token = map(
+                lambda t: eps.rearrange(t, "(b t) d -> b t d", t=num_frame),
+                [pose_token, shape_token, trans_token]
+            )
+            pose_token = pose_token + self.pose_temporal_encoder(pose_token, timestamp)
+            shape_token = shape_token + self.shape_temporal_encoder(shape_token, timestamp)
+            trans_token = trans_token + self.trans_temporal_encoder(trans_token, timestamp)
 
         # detokenize into pose
-        # [b,d] each
-        pose_token, shape_token, trans_token = torch.split(
-            hand_feats, split_size_or_sections=1, dim=1
-        )
+        # [b,d] [b,t,d]
         pose, shape, trans = self.mano_detokenizer(pose_token, shape_token, trans_token)
 
-        return pose[:, 0], shape[:, 0], trans[:, 0]
+        return pose, shape, trans
