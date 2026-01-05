@@ -6,7 +6,7 @@ import glob
 import logging
 import datetime
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
 
 import torch
@@ -15,6 +15,8 @@ from transformers import get_cosine_schedule_with_warmup
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from accelerate.utils import set_seed, broadcast_object_list
 from accelerate.logging import get_logger
+
+from aim import Run
 
 from src.data.dataloader import get_dataloader
 from src.data.preprocess import preprocess_batch
@@ -148,7 +150,8 @@ def train(
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     dataloader: Iterable,
     save_dir: str,
-    start_step: int = 0
+    start_step: int = 0,
+    aim_run = None,
 ):
     # steps
     total_step: int = cfg.GENERAL.total_step
@@ -214,6 +217,24 @@ def train(
             for k, v in state.items():
                 fmt += f" {k}={v.cpu().item():.4f}"
 
+            if aim_run is not None and accelerator.is_main_process:
+                # 记录 Learning Rate
+                aim_run.track(
+                    current_lr, name="lr", step=global_step, context={"subset": "train"}
+                )
+                # 记录 Total Loss
+                aim_run.track(
+                    loss.item(),
+                    name="loss_total",
+                    step=global_step,
+                    context={"subset": "train"},
+                )
+                # 记录 Loss 组件 (如 kps3d_loss, verts_loss 等)
+                for k, v in state.items():
+                    aim_run.track(
+                        v.item(), name=k, step=global_step, context={"subset": "train"}
+                    )
+
             logger.info(fmt)
 
         # 5. 可视化
@@ -245,6 +266,7 @@ def main(cfg: DictConfig):
     )
 
     save_dir_obj = [None]
+    aim_run = None
 
     if accelerator.is_main_process:
         now = datetime.datetime.now()
@@ -269,6 +291,14 @@ def main(cfg: DictConfig):
         logging.getLogger().addHandler(file_handler)
 
         save_dir_obj[0] = _save_dir
+
+        # Run看板
+        aim_run = Run(
+            experiment=f"{date_str}_{time_str}_{config_name}",
+            repo=hydra.utils.get_original_cwd(),
+        )
+        aim_run["hparams"] = OmegaConf.to_container(cfg, resolve=True)
+        logger.info(f"Aim run initialized in {_save_dir}")
 
     broadcast_object_list(save_dir_obj, from_process=0)
     save_dir = save_dir_obj[0]
@@ -308,7 +338,11 @@ def main(cfg: DictConfig):
         except ValueError:
             logger.warning("Warning: Could not parse step from checkpoint path, step count will be 0.")
 
-    train(cfg, accelerator, net, optim, scheduler, dataloader, save_dir, start_step)
+    train(cfg, accelerator, net, optim, scheduler, dataloader, save_dir, start_step, aim_run)
+
+    # close
+    if accelerator.is_main_process and aim_run is not None:
+        aim_run.close()
 
 
 if __name__ == "__main__":
