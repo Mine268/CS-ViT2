@@ -562,7 +562,7 @@ class TransformerDecoder(nn.Module):
         b, n, _ = x.shape
 
         x = self.dropout(x)
-        x += self.pos_embedding[:, :n]
+        x = x + self.pos_embedding[:, :n]
 
         x = self.transformer(x, *args, context=context, context_list=context_list)
         return x

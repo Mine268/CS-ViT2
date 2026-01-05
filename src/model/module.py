@@ -1,15 +1,16 @@
 from typing import *
-import os.path as osp
-import json
 
+import einops as eps
 import transformers
 import torch
 import torch.nn as nn
-import smplx
-import einops as eps
+from accelerate.logging import get_logger
 
 from ..constant import *
-from .hamer_module import TransformerCrossAttn, Attention, PreNorm, FeedForward, default
+from .hamer_module import Attention, PreNorm, FeedForward, default
+
+
+logger = get_logger(__name__)
 
 
 class TRotionalPositionEmbedding(nn.Module):
@@ -145,12 +146,12 @@ class DinoBackbone(nn.Module):
         self.hidden_size = backbone_cfg.hidden_size
         if self.img_size is None:
             self.img_size = backbone_cfg.image_size
-            print("No img_size provided for backbone. ", end="")
-            print(f"Loading from pretrained config img_size={self.img_size}.", end="\n")
+            logger.info("No img_size provided for backbone. "
+                f"Loading from pretrained config img_size={self.img_size}.")
         elif self.img_size != backbone_cfg.image_size:
-            print(f"Provided img_size={self.img_size} is not consistent with ", end="")
-            print(f"image_size={backbone_cfg.image_size} from config.json. ", end="")
-            print(f"Using img_size={self.img_size}", end="\n")
+            logger.warning(f"Provided img_size={self.img_size} is not consistent with "
+                f"image_size={backbone_cfg.image_size} from config.json. "
+                f"Using img_size={self.img_size}.")
 
         # post configuration
         assert (
@@ -159,7 +160,6 @@ class DinoBackbone(nn.Module):
         self.num_patch = self.img_size // self.patch_size
 
         # backbone
-        print("Loading model...")
         self.backbone = transformers.AutoModel.from_pretrained(
             self.backbone_str,
             output_hidden_states=True,

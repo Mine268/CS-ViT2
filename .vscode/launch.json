@@ -28,6 +28,22 @@
             "request": "launch",
             "module": "test.test_src_model_net",
             "console": "integratedTerminal"
+        },
+
+        {
+            "name": "stage1",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "accelerate.commands.launch",
+            "console": "integratedTerminal",
+            "args": [
+                "--num_processes", "1",
+                "--num_machines", "1",
+                "--mixed_precision", "no",
+                "-m", "script.stage1",
+            ],
+            "justMyCode": true
         }
+
     ]
 }

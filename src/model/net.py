@@ -2,7 +2,9 @@ import enum
 
 import numpy as np
 import torch.nn as nn
+import smplx
 
+from .loss import *
 from .module import *
 from .hamer_module import *
 
@@ -18,20 +20,22 @@ class PoseNet(nn.Module):
         # DinoBackbone
         backbone_str: str,
         img_size: Optional[int],
+        img_mean: List[float],
+        img_std: List[float],
         infusion_feats_lyr: List[int],
         drop_cls: bool,
-        # SpatialEncoder
-        num_spatial_layer: int,
-        num_spatial_head: int,
-        ndim_spatial_mlp: int,
-        ndim_spatial_head: int,
-        prob_spatial_dropout: float,
-        prob_spatial_emb_dropout: float,
-        spatial_emb_dropout_type: str,
-        spatial_norm: str,
-        ndim_spatial_norm_cond_dim: int,
-        ndim_spatial_ctx: Optional[int],
-        spatial_skip_token_embed: bool,
+        # hand feat extractor
+        num_hf_layer: int,
+        num_hf_head: int,
+        ndim_hf_mlp: int,
+        ndim_hf_head: int,
+        prob_hf_dropout: float,
+        prob_hf_emb_dropout: float,
+        hf_emb_dropout_type: str,
+        hf_norm: str,
+        ndim_hf_norm_cond_dim: int,
+        ndim_hf_ctx: Optional[int],
+        hf_skip_token_embed: bool,
         # PerspInfoEmbedderDense
         num_pie_sample: int,
         pie_fusion: str,
@@ -42,6 +46,9 @@ class PoseNet(nn.Module):
         zero_linear: bool,
         # MANOPoseDetokenizer
         detok_joint_type: str,
+        # loss
+        kps3d_loss_type: str,
+        verts_loss_type: str,
     ):
         super(PoseNet, self).__init__()
         self.stage = stage
@@ -51,6 +58,8 @@ class PoseNet(nn.Module):
             img_size=img_size,
             infusion_feats_lyr=infusion_feats_lyr,
         )
+        self.register_buffer("img_mean", torch.Tensor(img_mean))
+        self.register_buffer("img_std", torch.Tensor(img_std))
         self.drop_cls = drop_cls
         self.patch_size = self.backbone.get_patch_size()
         self.hidden_size = self.backbone.get_hidden_size()
@@ -81,21 +90,21 @@ class PoseNet(nn.Module):
             data=torch.randn(1, 3, self.hidden_size),
             requires_grad=True,
         )
-        self.spatial_encoder = TransformerDecoder(
+        self.hand_feat_encoder = TransformerDecoder(
             num_tokens=3,
             token_dim=self.hidden_size,
             dim=self.hidden_size,
-            depth=num_spatial_layer,
-            heads=num_spatial_head,
-            mlp_dim=ndim_spatial_mlp,
-            dim_head=ndim_spatial_head,
-            dropout=prob_spatial_dropout,
-            emb_dropout=prob_spatial_emb_dropout,
-            emb_dropout_type=spatial_emb_dropout_type,
-            norm=spatial_norm,
-            norm_cond_dim=ndim_spatial_norm_cond_dim,
-            context_dim=ndim_spatial_ctx,
-            skip_token_embedding=spatial_skip_token_embed,
+            depth=num_hf_layer,
+            heads=num_hf_head,
+            mlp_dim=ndim_hf_mlp,
+            dim_head=ndim_hf_head,
+            dropout=prob_hf_dropout,
+            emb_dropout=prob_hf_emb_dropout,
+            emb_dropout_type=hf_emb_dropout_type,
+            norm=hf_norm,
+            norm_cond_dim=ndim_hf_norm_cond_dim,
+            context_dim=ndim_hf_ctx,
+            skip_token_embedding=hf_skip_token_embed,
         )
 
         # Temporal encoder
@@ -103,7 +112,7 @@ class PoseNet(nn.Module):
             dim=self.hidden_size,
             num_head=num_temporal_head,
             num_layer=num_temporal_layer,
-            dropout=prob_spatial_dropout,
+            dropout=prob_hf_dropout,
             trope_scalar=trope_scalar,
             zero_linear=zero_linear,
         )
@@ -111,7 +120,7 @@ class PoseNet(nn.Module):
             dim=self.hidden_size,
             num_head=num_temporal_head,
             num_layer=num_temporal_layer,
-            dropout=prob_spatial_dropout,
+            dropout=prob_hf_dropout,
             trope_scalar=trope_scalar,
             zero_linear=zero_linear,
         )
@@ -119,7 +128,7 @@ class PoseNet(nn.Module):
             dim=self.hidden_size,
             num_head=num_temporal_head,
             num_layer=num_temporal_layer,
-            dropout=prob_spatial_dropout,
+            dropout=prob_hf_dropout,
             trope_scalar=trope_scalar,
             zero_linear=zero_linear,
         )
@@ -129,6 +138,12 @@ class PoseNet(nn.Module):
             dim=self.hidden_size,
             joint_rep_type=detok_joint_type
         )
+
+        # Loss
+        self.kps3d_loss = Keypoint3DLoss(kps3d_loss_type)
+        self.verts_loss = VertsLoss(verts_loss_type)
+        self.axis_loss = Axis3DLoss("l1")
+        self.shape_loss = ShapeLoss("l1")
 
     def extract_hand_feature(
         self,
@@ -157,7 +172,7 @@ class PoseNet(nn.Module):
 
         # extract hand feature
         query_tokens = self.query_tokens.expand(img.shape[0], -1, -1)
-        hand_feats = self.spatial_encoder(query_tokens, context=feats) # [b,3,d] / [(bt),3,d]
+        hand_feats = self.hand_feat_encoder(query_tokens, context=feats) # [b,3,d] / [(bt),3,d]
 
         # split into 3 seperate feature
         # [b,d] / [(bt),d]
@@ -188,6 +203,11 @@ class PoseNet(nn.Module):
         )
 
         num_frame = img.shape[1]
+
+        img = (
+            (img - self.img_mean[None, None, :, None, None]) /
+            self.img_std[None, None, :, None, None]
+        )
 
         img, bbox, focal, princpt = map(
             lambda t: eps.rearrange(t, "b t ... -> (b t) ..."),
@@ -250,12 +270,37 @@ class PoseNet(nn.Module):
 
         return joint_cam, verts_cam
 
-    def forward(
-        self,
-        img: torch.Tensor,
-        bbox: torch.Tensor,
-        focal: torch.Tensor,
-        princpt: torch.Tensor,
-        timestamp: torch.Tensor,
-    ):
-        pass
+    def forward(self, batch):
+        # 1. forward
+        pose_pred, shape_pred, trans_pred = self.predict_mano_param(
+            img=batch["patches"],
+            bbox=batch["patch_bbox"],
+            focal=batch["focal"],
+            princpt=batch["princpt"],
+            timestamp=batch["timestamp"]
+        )
+
+        # 2. fk
+        with torch.no_grad():
+            _, verts_cam_gt = self.mano_to_pose(
+                batch["mano_pose"], batch["mano_shape"], batch["joint_cam"][:, :, 0]
+            )
+        joint_cam_pred, verts_cam_pred = self.mano_to_pose(pose_pred, shape_pred, trans_pred)
+
+        # 3. loss: 3d joint, 3d verts, 3d axis, shape
+        loss_kps3d = self.kps3d_loss(joint_cam_pred, batch["joint_cam"], batch["joint_valid"])
+        loss_verts = self.verts_loss(verts_cam_pred, verts_cam_gt, batch["mano_valid"])
+        loss_axis = self.axis_loss(pose_pred, batch["mano_pose"], batch["mano_valid"])
+        loss_shape = self.shape_loss(shape_pred, batch["mano_shape"], batch["mano_valid"])
+
+        loss_state = {
+            "loss": loss_kps3d + loss_verts + loss_axis + loss_shape,
+            "state": {
+                "loss_kps3d": loss_kps3d.detach(),
+                "loss_verts": loss_verts.detach(),
+                "loss_axis": loss_axis.detach(),
+                "loss_shape": loss_shape.detach(),
+            }
+        }
+
+        return loss_state

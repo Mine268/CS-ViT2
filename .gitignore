@@ -233,3 +233,4 @@ __marimo__/
 # Project
 model/
 !src/model/
+checkpoint/
