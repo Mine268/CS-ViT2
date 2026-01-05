@@ -14,11 +14,12 @@ hydra:
 GENERAL:
   total_step: 1000000
   log_step: 10
-  checkpoint_step: 1000
+  checkpoint_step: 10
   warmup_step: 5000
   num_worker: 4
   prefetch_factor: 2
   seed: 3229084
+  resume_path: null
 
 TRAIN:
   lr: 1e-5

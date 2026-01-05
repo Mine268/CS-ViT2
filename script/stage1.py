@@ -1,6 +1,7 @@
 from typing import *
 import os
 import os.path as osp
+import shutil
 import glob
 import logging
 import datetime
@@ -12,7 +13,7 @@ import torch
 import torch.nn as nn
 from transformers import get_cosine_schedule_with_warmup
 from accelerate import Accelerator, DistributedDataParallelKwargs
-from accelerate.utils import set_seed
+from accelerate.utils import set_seed, broadcast_object_list
 from accelerate.logging import get_logger
 
 from src.data.dataloader import get_dataloader
@@ -22,6 +23,29 @@ from src.model.net import PoseNet
 
 logger = get_logger(__name__)
 save_dir = None
+
+
+def manage_checkpoints(output_dir, keep_last_n=3):
+    """只保留最近的 N 个 checkpoint"""
+    ckpt_parent_dir = os.path.join(output_dir, "checkpoints")
+    if not os.path.exists(ckpt_parent_dir):
+        return
+
+    # 获取所有 checkpoint 文件夹
+    ckpts = [d for d in os.listdir(ckpt_parent_dir) if d.startswith("checkpoint-")]
+    # 按步数排序 (假设格式为 checkpoint-1000)
+    try:
+        ckpts.sort(key=lambda x: int(x.split("-")[-1]))
+    except ValueError:
+        return # 格式不对就不管了
+
+    if len(ckpts) > keep_last_n:
+        # 删除旧的
+        for ckpt_to_del in ckpts[:-keep_last_n]:
+            path_to_del = os.path.join(ckpt_parent_dir, ckpt_to_del)
+            if os.path.exists(path_to_del):
+                shutil.rmtree(path_to_del)
+                # print(f"Deleted old checkpoint: {path_to_del}")
 
 
 def setup_dataloader(cfg: DictConfig):
@@ -123,6 +147,8 @@ def train(
     optim: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     dataloader: Iterable,
+    save_dir: str,
+    start_step: int = 0
 ):
     # steps
     total_step: int = cfg.GENERAL.total_step
@@ -132,13 +158,14 @@ def train(
     # deviec
     net.train()
     device = accelerator.device
+    global_step = start_step
 
     # start training
-    for step, batch_ in enumerate(dataloader):
-        if step >= total_step:
-            break
+    data_iter = iter(dataloader)
 
+    while global_step < total_step:
         # 1. 获取数据&增强
+        batch_ = next(data_iter)
         batch, trans_2d_mat = preprocess_batch(
             batch_origin=batch_,
             patch_size=[cfg.MODEL.img_size, cfg.MODEL.img_size],
@@ -165,13 +192,18 @@ def train(
             optim.zero_grad()
 
         # 3. 保存模型
-        if accelerator.sync_gradients and step % checkpoint_step == 0:
-            pass
+        if accelerator.sync_gradients and global_step % checkpoint_step == 0:
+            ckpt_path = osp.join(save_dir, "checkpoints", f"checkpoint-{global_step}")
+            accelerator.save_state(ckpt_path)
 
-        # 3. 打印日志
-        if accelerator.sync_gradients and step % log_step == 0:
+            if accelerator.is_main_process:
+                manage_checkpoints(save_dir, keep_last_n=3)
+                logger.info(f"Saved state to {ckpt_path}.")
+
+        # 4. 打印日志
+        if accelerator.sync_gradients and global_step % log_step == 0:
             state = output["state"]
-            fmt = f"{step}/{total_step}"
+            fmt = f"{global_step}/{total_step}"
 
             # 监控lr
             current_lr = scheduler.get_last_lr()[0]
@@ -184,9 +216,12 @@ def train(
 
             logger.info(fmt)
 
-        # 4. 可视化
-        if accelerator.sync_gradients and step % log_step == 0:
+        # 5. 可视化
+        if accelerator.sync_gradients and global_step % log_step == 0:
             pass
+
+        if accelerator.sync_gradients:
+            global_step += 1
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="default_stage1")
@@ -209,6 +244,8 @@ def main(cfg: DictConfig):
         force=True
     )
 
+    save_dir_obj = [None]
+
     if accelerator.is_main_process:
         now = datetime.datetime.now()
         date_str = now.strftime("%d-%m-%Y")
@@ -219,19 +256,22 @@ def main(cfg: DictConfig):
         except Exception:
             config_name = "debug"
 
-        save_dir = osp.join("checkpoint", date_str, f"{time_str}_{config_name}")
-        os.makedirs(save_dir, exist_ok=True)
-        log_filename = osp.join(save_dir, "log.txt")
+        _save_dir = osp.join("checkpoint", date_str, f"{time_str}_{config_name}")
+        os.makedirs(_save_dir, exist_ok=True)
 
         # B. 配置名为 file 的 Handler
+        log_filename = osp.join(_save_dir, "log.txt")
         file_handler = logging.FileHandler(log_filename, mode="w")
-
         # 关键修改：手动创建 Formatter 并赋予 file_handler
         formatter = logging.Formatter(log_format, datefmt=date_format)
         file_handler.setFormatter(formatter)
-
         # 将 Handler 添加到 root logger
         logging.getLogger().addHandler(file_handler)
+
+        save_dir_obj[0] = _save_dir
+
+    broadcast_object_list(save_dir_obj, from_process=0)
+    save_dir = save_dir_obj[0]
 
     accelerator.wait_for_everyone()
     logger.info(accelerator.state, main_process_only=False)
@@ -253,7 +293,22 @@ def main(cfg: DictConfig):
     net, optim, scheduler = accelerator.prepare(net, optim, scheduler)
 
     # 7. 训练
-    train(cfg, accelerator, net, optim, scheduler, dataloader)
+    start_step = 0
+    resume_path = cfg.GENERAL.resume_path
+
+    if resume_path is not None:
+        accelerator.load_state(resume_path)
+        logger.info(f"Resumed training from {resume_path}")
+
+        # 解析步数
+        try:
+            # checkpoint-XXX
+            step_str = os.path.basename(os.path.normpath(resume_path)).split("-")[-1]
+            start_step = int(step_str)
+        except ValueError:
+            logger.warning("Warning: Could not parse step from checkpoint path, step count will be 0.")
+
+    train(cfg, accelerator, net, optim, scheduler, dataloader, save_dir, start_step)
 
 
 if __name__ == "__main__":
