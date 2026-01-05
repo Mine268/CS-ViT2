@@ -190,59 +190,58 @@ def train(
             if accelerator.sync_gradients:
                 accelerator.clip_grad_norm_(net.parameters(), cfg.TRAIN.max_grad)
 
-            optim.step()
-            scheduler.step()
-            optim.zero_grad()
+                optim.step()
+                scheduler.step()
+                optim.zero_grad()
 
-        # 3. 保存模型
-        if accelerator.sync_gradients and global_step % checkpoint_step == 0:
-            ckpt_path = osp.join(save_dir, "checkpoints", f"checkpoint-{global_step}")
-            accelerator.save_state(ckpt_path)
+                global_step += 1
 
-            if accelerator.is_main_process:
-                manage_checkpoints(save_dir, keep_last_n=3)
-                logger.info(f"Saved state to {ckpt_path}.")
+                # 3. 保存模型
+                if global_step % checkpoint_step == 0:
+                    ckpt_path = osp.join(save_dir, "checkpoints", f"checkpoint-{global_step}")
+                    accelerator.save_state(ckpt_path)
 
-        # 4. 打印日志
-        if accelerator.sync_gradients and global_step % log_step == 0:
-            state = output["state"]
-            fmt = f"{global_step}/{total_step}"
+                    if accelerator.is_main_process:
+                        manage_checkpoints(save_dir, keep_last_n=3)
+                        logger.info(f"Saved state to {ckpt_path}.")
 
-            # 监控lr
-            current_lr = scheduler.get_last_lr()[0]
-            fmt += f" lr={current_lr:.4e}"
+                # 4. 打印日志
+                if global_step % log_step == 0:
+                    state = output["state"]
+                    fmt = f"{global_step}/{total_step}"
 
-            # 监控loss组成
-            fmt += f" total={loss.cpu().item():.4f}"
-            for k, v in state.items():
-                fmt += f" {k}={v.cpu().item():.4f}"
+                    # 监控lr
+                    current_lr = scheduler.get_last_lr()[0]
+                    fmt += f" lr={current_lr:.4e}"
 
-            if aim_run is not None and accelerator.is_main_process:
-                # 记录 Learning Rate
-                aim_run.track(
-                    current_lr, name="lr", step=global_step, context={"subset": "train"}
-                )
-                # 记录 Total Loss
-                aim_run.track(
-                    loss.item(),
-                    name="loss_total",
-                    step=global_step,
-                    context={"subset": "train"},
-                )
-                # 记录 Loss 组件 (如 kps3d_loss, verts_loss 等)
-                for k, v in state.items():
-                    aim_run.track(
-                        v.item(), name=k, step=global_step, context={"subset": "train"}
-                    )
+                    # 监控loss组成
+                    fmt += f" total={loss.cpu().item():.4f}"
+                    for k, v in state.items():
+                        fmt += f" {k}={v.cpu().item():.4f}"
 
-            logger.info(fmt)
+                    if aim_run is not None and accelerator.is_main_process:
+                        # 记录 Learning Rate
+                        aim_run.track(
+                            current_lr, name="lr", step=global_step, context={"subset": "train"}
+                        )
+                        # 记录 Total Loss
+                        aim_run.track(
+                            loss.item(),
+                            name="loss_total",
+                            step=global_step,
+                            context={"subset": "train"},
+                        )
+                        # 记录 Loss 组件 (如 kps3d_loss, verts_loss 等)
+                        for k, v in state.items():
+                            aim_run.track(
+                                v.item(), name=k, step=global_step, context={"subset": "train"}
+                            )
 
-        # 5. 可视化
-        if accelerator.sync_gradients and global_step % log_step == 0:
-            pass
+                    logger.info(fmt)
 
-        if accelerator.sync_gradients:
-            global_step += 1
+                # 5. 可视化
+                if global_step % log_step == 0:
+                    pass
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="default_stage1")
