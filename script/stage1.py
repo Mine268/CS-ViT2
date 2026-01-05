@@ -10,7 +10,7 @@ from hydra.core.hydra_config import HydraConfig
 
 import torch
 import torch.nn as nn
-import numpy as np
+from transformers import get_cosine_schedule_with_warmup
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from accelerate.utils import set_seed
 from accelerate.logging import get_logger
@@ -89,8 +89,12 @@ def setup_optim(cfg: DictConfig, net: nn.Module):
     optim = torch.optim.AdamW(
         params=[
             {
-                "params": filter(lambda p: p.requires_grad, net.parameters()),
+                "params": filter(lambda p: p.requires_grad, net.get_regressor_params()),
                 "lr": cfg.TRAIN.lr,
+            },
+            {
+                "params": filter(lambda p: p.requires_grad, net.get_backbone_params()),
+                "lr": cfg.TRAIN.backbone_lr,
             }
         ],
         weight_decay=cfg.TRAIN.weight_decay,
@@ -99,11 +103,25 @@ def setup_optim(cfg: DictConfig, net: nn.Module):
     return optim
 
 
+def setup_scheduler(cfg: DictConfig, optim: torch.optim.Optimizer):
+    total_step = cfg.GENERAL.total_step
+    num_warmup_step = cfg.GENERAL.warmup_step
+
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer=optim,
+        num_warmup_steps=num_warmup_step,
+        num_training_steps=total_step
+    )
+
+    return scheduler
+
+
 def train(
     cfg: DictConfig,
     accelerator: Accelerator,
     net: nn.Module,
     optim: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LambdaLR,
     dataloader: Iterable,
 ):
     # steps
@@ -143,6 +161,7 @@ def train(
                 accelerator.clip_grad_norm_(net.parameters(), cfg.TRAIN.max_grad)
 
             optim.step()
+            scheduler.step()
             optim.zero_grad()
 
         # 3. 保存模型
@@ -154,6 +173,12 @@ def train(
             state = output["state"]
             fmt = f"{step}/{total_step}"
 
+            # 监控lr
+            current_lr = scheduler.get_last_lr()[0]
+            fmt += f" lr={current_lr:.4e}"
+
+            # 监控loss组成
+            fmt += f" total={loss.cpu().item():.4f}"
             for k, v in state.items():
                 fmt += f" {k}={v.cpu().item():.4f}"
 
@@ -222,12 +247,13 @@ def main(cfg: DictConfig):
 
     # 5. 优化器
     optim = setup_optim(cfg, net)
+    scheduler = setup_scheduler(cfg, optim)
 
     # 6. accel, 不用处理dataloader
-    net, optim = accelerator.prepare(net, optim)
+    net, optim, scheduler = accelerator.prepare(net, optim, scheduler)
 
     # 7. 训练
-    train(cfg, accelerator, net, optim, dataloader)
+    train(cfg, accelerator, net, optim, scheduler, dataloader)
 
 
 if __name__ == "__main__":

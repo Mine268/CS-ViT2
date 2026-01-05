@@ -1,4 +1,5 @@
 import enum
+import itertools
 
 import numpy as np
 import torch.nn as nn
@@ -304,3 +305,17 @@ class PoseNet(nn.Module):
         }
 
         return loss_state
+
+    def get_backbone_params(self):
+        return self.backbone.parameters()
+
+    def get_regressor_params(self):
+        return itertools.chain(
+            self.persp_info_embedder.parameters(),
+            self.hand_feat_encoder.parameters(),
+            self.pose_temporal_encoder.parameters(),
+            self.shape_temporal_encoder.parameters(),
+            self.trans_temporal_encoder.parameters(),
+            self.mano_detokenizer.parameters(),
+            [self.query_tokens],
+        )

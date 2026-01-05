@@ -15,12 +15,14 @@ GENERAL:
   total_step: 1000000
   log_step: 10
   checkpoint_step: 1000
+  warmup_step: 5000
   num_worker: 4
   prefetch_factor: 2
   seed: 3229084
 
 TRAIN:
   lr: 1e-5
+  backbone_lr: 1e-7
   grad_accum_step: 1
   max_grad: 5.0
   weight_decay: 1e-4
