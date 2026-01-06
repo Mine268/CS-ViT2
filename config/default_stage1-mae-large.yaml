@@ -21,6 +21,7 @@ GENERAL:
   prefetch_factor: 2
   seed: 3229084
   resume_path: null
+  aim_path: /mnt/qnap/body/renkaiwen/aim/CS-ViT2/
 
 TRAIN:
   lr: 1e-5
@@ -48,6 +49,7 @@ DATA:
       /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/val/*,
     ]
     stride: 1
+    max_val_step: 1000
 
 MODEL:
   img_size: 224
