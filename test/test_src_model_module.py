@@ -4,7 +4,7 @@ from src.model.module import *
 
 
 def test_DinoBackbone1():
-    spatial_encoder = DinoBackbone(
+    spatial_encoder = ViTBackbone(
         "model/facebook/dinov2-base",
         224,
         [2, 6, 10],
@@ -18,7 +18,7 @@ def test_DinoBackbone1():
 
 
 def test_DinoBackbone2():
-    spatial_encoder = DinoBackbone(
+    spatial_encoder = ViTBackbone(
         "model/facebook/dinov2-base",
         224,
         None,

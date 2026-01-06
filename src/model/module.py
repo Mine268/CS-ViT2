@@ -127,14 +127,15 @@ class PerspInfoEmbedderDense(nn.Module):
         return persp_feat
 
 
-class DinoBackbone(nn.Module):
+class ViTBackbone(nn.Module):
     def __init__(
         self,
         backbone_str: str,
         img_size: Optional[int],
         infusion_feats_lyr: List[int],
+        backbone_kwargs: Dict,
     ):
-        super(DinoBackbone, self).__init__()
+        super(ViTBackbone, self).__init__()
 
         self.backbone_str = backbone_str
         self.img_size = img_size
@@ -163,6 +164,7 @@ class DinoBackbone(nn.Module):
         self.backbone = transformers.AutoModel.from_pretrained(
             self.backbone_str,
             output_hidden_states=True,
+            **backbone_kwargs,
         )
 
         # multi-layer fusion

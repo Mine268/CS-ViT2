@@ -25,6 +25,7 @@ class PoseNet(nn.Module):
         img_std: List[float],
         infusion_feats_lyr: List[int],
         drop_cls: bool,
+        backbone_kwargs: Optional[Dict],
         # hand feat extractor
         num_hf_layer: int,
         num_hf_head: int,
@@ -54,10 +55,12 @@ class PoseNet(nn.Module):
         super(PoseNet, self).__init__()
         self.stage = stage
         # Image encoder
-        self.backbone = DinoBackbone(
+        backbone_kwargs = default(backbone_kwargs, {})
+        self.backbone = ViTBackbone(
             backbone_str=backbone_str,
             img_size=img_size,
             infusion_feats_lyr=infusion_feats_lyr,
+            backbone_kwargs=dict(backbone_kwargs),
         )
         self.register_buffer("img_mean", torch.Tensor(img_mean))
         self.register_buffer("img_std", torch.Tensor(img_std))

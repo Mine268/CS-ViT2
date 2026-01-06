@@ -13,6 +13,7 @@ def test_PoseNet1():
         img_std=[1., 1., 1.],
         infusion_feats_lyr=[2, 6, 10],
         drop_cls=False,
+        backbone_kwargs=None,
         #
         num_hf_layer=6,
         num_hf_head=12,
@@ -67,6 +68,7 @@ def test_PoseNet2():
         img_std=[1., 1., 1.],
         infusion_feats_lyr=[2, 6, 10],
         drop_cls=False,
+        backbone_kwargs=None,
         #
         num_hf_layer=6,
         num_hf_head=12,

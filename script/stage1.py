@@ -81,6 +81,7 @@ def setup_model(cfg: DictConfig):
         img_std=cfg.MODEL.img_std,
         infusion_feats_lyr=cfg.MODEL.backbone.infusion_layer,
         drop_cls=cfg.MODEL.backbone.drop_cls,
+        backbone_kwargs=cfg.MODEL.backbone.get("kwargs"),
 
         num_hf_layer=cfg.MODEL.hand_feat_extractor.num_layer,
         num_hf_head=cfg.MODEL.hand_feat_extractor.num_head,
@@ -132,11 +133,13 @@ def setup_optim(cfg: DictConfig, net: nn.Module):
 def setup_scheduler(cfg: DictConfig, optim: torch.optim.Optimizer):
     total_step = cfg.GENERAL.total_step
     num_warmup_step = cfg.GENERAL.warmup_step
+    num_cycle = cfg.GENERAL.cosine_cycle
 
     scheduler = get_cosine_schedule_with_warmup(
         optimizer=optim,
         num_warmup_steps=num_warmup_step,
-        num_training_steps=total_step
+        num_training_steps=total_step,
+        num_cycles=num_cycle,
     )
 
     return scheduler

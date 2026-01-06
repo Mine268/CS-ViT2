@@ -12,10 +12,11 @@ hydra:
       handlers: []
 
 GENERAL:
-  total_step: 1000000
+  total_step: 100000
   log_step: 10
   checkpoint_step: 3000
   warmup_step: 5000
+  cosine_cycle: 10
   num_worker: 4
   prefetch_factor: 2
   seed: 3229084
@@ -23,7 +24,7 @@ GENERAL:
 
 TRAIN:
   lr: 1e-5
-  backbone_lr: 1e-7
+  backbone_lr: 1e-6
   grad_accum_step: 1
   max_grad: 5.0
   weight_decay: 1e-4
