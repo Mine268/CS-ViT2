@@ -337,7 +337,7 @@ def train(
                         accelerator,
                         net,
                         val_loader,
-                        cfg.TRAIN.val.get("max_val_step", 1000),
+                        cfg.DATA.val.get("max_val_step", 1000),
                     )
                     logger.info(f"validation finished, mpjpe={val_result['mpjpe']}, "
                         f"mpvpe={val_result["mpvpe"]}")

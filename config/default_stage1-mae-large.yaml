@@ -26,8 +26,8 @@ GENERAL:
   resume_path: null
 
 TRAIN:
-  lr: 1e-5
-  backbone_lr: 1e-6
+  lr: 1e-4
+  backbone_lr: 1e-5
   grad_accum_step: 1
   max_grad: 1.0
   weight_decay: 1e-4
