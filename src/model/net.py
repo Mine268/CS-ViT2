@@ -306,6 +306,11 @@ class PoseNet(nn.Module):
                 "loss_verts": loss_verts.detach(),
                 "loss_axis": loss_axis.detach(),
                 "loss_shape": loss_shape.detach(),
+            },
+            "result": {
+                "joint_cam_pred": joint_cam_pred.detach(),
+                "verts_cam_pred": verts_cam_pred.detach(),
+                "verts_cam_gt": verts_cam_gt.detach()
             }
         }
 

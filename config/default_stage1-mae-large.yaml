@@ -35,12 +35,18 @@ TRAIN:
   persp_rot_max: 0.2617993877991494 # pi/12
 
 DATA:
-  source: [
-    /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*,
-    /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/train/*,
-    /mnt/qnap/data/datasets/webdatasets/HO3D_v3/train/*
-  ]
-  stride: 1
+  train:
+    source: [
+      /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*,
+      /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/train/*,
+      /mnt/qnap/data/datasets/webdatasets/HO3D_v3/train/*
+    ]
+    stride: 1
+  val:
+    source: [
+      /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/val/*,
+    ]
+    stride: 1
 
 MODEL:
   img_size: 224

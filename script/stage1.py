@@ -51,24 +51,39 @@ def manage_checkpoints(output_dir, keep_last_n=3):
 
 
 def setup_dataloader(cfg: DictConfig):
-    sources = []
-    for src in cfg.DATA.source:
+    train_sources = []
+    for src in cfg.DATA.train.source:
         matched_files = glob.glob(src)
         matched_files = sorted(matched_files)
-        sources.extend(matched_files)
-
-    dataloader = get_dataloader(
-        url=sources,
+        train_sources.extend(matched_files)
+    train_loader = get_dataloader(
+        url=train_sources,
         num_frames=cfg.MODEL.num_frame,
-        stride=cfg.DATA.stride,
+        stride=cfg.DATA.train.stride,
         batch_size=cfg.TRAIN.sample_per_device,
         num_workers=cfg.GENERAL.num_worker,
         prefetcher_factor=cfg.GENERAL.prefetch_factor,
+        infinite=True,
     )
+    logger.info(f"setup train loader: {train_sources}")
 
-    logger.info(f"setup dataloader: {sources}")
+    val_sources = []
+    for src in cfg.DATA.val.source:
+        matched_files = glob.glob(src)
+        matched_files = sorted(matched_files)
+        val_sources.extend(matched_files)
+    val_loader = get_dataloader(
+        url=val_sources,
+        num_frames=cfg.MODEL.num_frame,
+        stride=cfg.DATA.val.stride,
+        batch_size=cfg.TRAIN.sample_per_device,
+        num_workers=cfg.GENERAL.num_worker,
+        prefetcher_factor=cfg.GENERAL.prefetch_factor,
+        infinite=False,
+    )
+    logger.info(f"setup val loader: {val_sources}")
 
-    return dataloader
+    return train_loader, val_loader
 
 
 def setup_model(cfg: DictConfig):
@@ -146,13 +161,113 @@ def setup_scheduler(cfg: DictConfig, optim: torch.optim.Optimizer):
     return scheduler
 
 
+@torch.inference_mode()
+def val(
+    cfg: DictConfig,
+    accelerator: Accelerator,
+    net: nn.Module,
+    val_loader: Iterable,
+):
+    """
+    多卡验证函数。
+    核心思路：本地累加 Error 和 Count -> 全局 Reduce 求和 -> 计算平均值。
+    """
+    net.eval()
+    device = accelerator.device
+
+    # 1. 初始化累计器 (Total Error, Total Count)
+    # 使用 float64 防止溢出，虽然 float32 通常也够
+    metrics_accum = torch.zeros(4, device=device, dtype=torch.float64)
+    # indices: [0]=joint_err_sum, [1]=joint_count, [2]=verts_err_sum, [3]=verts_count
+
+    # 如果想要显示进度条 (仅主进程)
+    # iter_wrapper = tqdm(val_loader, desc="Val") if accelerator.is_main_process else val_loader
+    iter_wrapper = val_loader
+
+    for ix, batch_ in enumerate(iter_wrapper):
+        batch, _ = preprocess_batch(
+            batch_origin=batch_,
+            patch_size=[cfg.MODEL.img_size, cfg.MODEL.img_size],
+            patch_expanstion=cfg.TRAIN.expansion_ratio,
+            scale_z_range=cfg.TRAIN.scale_z_range,
+            scale_f_range=cfg.TRAIN.scale_f_range,
+            persp_rot_max=cfg.TRAIN.persp_rot_max,
+            augmentation_flag=False,
+            device=device
+        )
+
+        output = net(batch)
+
+        # 获取预测值和真值
+        joint_cam_pred = output["result"]["joint_cam_pred"] # [B, T, J, 3]
+        verts_cam_pred = output["result"]["verts_cam_pred"] # [B, T, V, 3]
+
+        joint_cam_gt = batch["joint_cam"]
+        verts_cam_gt = output["result"]["verts_cam_gt"]
+
+        # Mask: joint_valid [B, T, J], mano_valid [B, T]
+        joint_valid = batch["joint_valid"]
+        mano_valid = batch["mano_valid"]
+
+        # --- A. 计算 MPJPE (Mean Per Joint Position Error) ---
+        # error per joint: [B, T, J]
+        joint_error = torch.sqrt(torch.sum((joint_cam_pred - joint_cam_gt) ** 2, dim=-1))
+
+        # 应用 Mask
+        mask_j = joint_valid > 0.5
+        if mask_j.any():
+            metrics_accum[0] += joint_error[mask_j].sum()
+            metrics_accum[1] += mask_j.sum()
+
+        # --- B. 计算 MPVPE (Mean Per Vertex Position Error) ---
+        # error per vertex: [B, T, V]
+        if verts_cam_pred is not None and verts_cam_gt is not None:
+            verts_error = torch.sqrt(torch.sum((verts_cam_pred - verts_cam_gt) ** 2, dim=-1))
+
+            # mano_valid 通常是整手有效性 [B, T]，需要扩展到 [B, T, V] 或者直接索引
+            # 这里简单处理：找出有效的 (b,t) 索引，对这些帧的所有点求和
+            mask_v = mano_valid > 0.5 # [B, T]
+            if mask_v.any():
+                # verts_error[mask_v] 得到 [N_valid_frames, V]
+                metrics_accum[2] += verts_error[mask_v].sum()
+                metrics_accum[3] += verts_error[mask_v].numel()
+
+    # ==========================================
+    # 3. 关键同步代码：Reduce
+    # ==========================================
+    # 将所有 GPU 的累加值相加
+    # reduction="sum" 表示所有进程的值加在一起，结果广播回所有进程
+    metrics_sum = accelerator.reduce(metrics_accum, reduction="sum")
+
+    # 4. 计算最终平均值 (转回 mm)
+    final_results = {}
+
+    # MPJPE
+    total_j_err, total_j_cnt = metrics_sum[0].item(), metrics_sum[1].item()
+    if total_j_cnt > 0:
+        final_results["mpjpe"] = total_j_err / total_j_cnt
+    else:
+        final_results["mpjpe"] = 0.0
+
+    # MPVPE
+    total_v_err, total_v_cnt = metrics_sum[2].item(), metrics_sum[3].item()
+    if total_v_cnt > 0:
+        final_results["mpvpe"] = total_v_err / total_v_cnt
+    else:
+        final_results["mpvpe"] = 0.0
+
+    net.train() # 恢复训练模式
+    return final_results
+
+
 def train(
     cfg: DictConfig,
     accelerator: Accelerator,
     net: nn.Module,
     optim: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
-    dataloader: Iterable,
+    train_loader: Iterable,
+    val_loader: Iterable,
     save_dir: str,
     start_step: int = 0,
     aim_run = None,
@@ -168,7 +283,7 @@ def train(
     global_step = start_step
 
     # start training
-    data_iter = iter(dataloader)
+    data_iter = iter(train_loader)
 
     while global_step < total_step:
         # 1. 获取数据&增强
@@ -209,7 +324,18 @@ def train(
                         manage_checkpoints(save_dir, keep_last_n=3)
                         logger.info(f"Saved state to {ckpt_path}.")
 
-                # 4. 打印日志
+                # 4. 验证集测试
+                if global_step % checkpoint_step == 0:
+                    logger.info("validating...")
+                    val_result = val(cfg, accelerator, net, val_loader)
+                    logger.info(f"validation finished, mpjpe={val_result['mpjpe']}, "
+                        f"mpvpe={val_result["mpvpe"]}")
+
+                    if aim_run is not None and accelerator.is_main_process:
+                        for k, v in val_result.items():
+                            aim_run.track(v, name=k, step=global_step, context={"subset": "val"})
+
+                # 5. 打印日志
                 if global_step % log_step == 0:
                     state = output["state"]
                     fmt = f"{global_step}/{total_step}"
@@ -243,7 +369,7 @@ def train(
 
                     logger.info(fmt)
 
-                # 5. 可视化
+                # 6. 可视化
                 if global_step % log_step == 0:
                     pass
 
@@ -313,7 +439,7 @@ def main(cfg: DictConfig):
     set_seed(cfg.GENERAL.seed)
 
     # 3. 获取dataloader
-    dataloader = setup_dataloader(cfg)
+    train_loader, val_loader = setup_dataloader(cfg)
 
     # 4. 获取模型
     net = setup_model(cfg)
@@ -341,7 +467,18 @@ def main(cfg: DictConfig):
         except ValueError:
             logger.warning("Warning: Could not parse step from checkpoint path, step count will be 0.")
 
-    train(cfg, accelerator, net, optim, scheduler, dataloader, save_dir, start_step, aim_run)
+    train(
+        cfg=cfg,
+        accelerator=accelerator,
+        net=net,
+        optim=optim,
+        schedeuler=scheduler,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        save_dir=save_dir,
+        start_step=start_step,
+        aim_run=aim_run,
+    )
 
     # close
     if accelerator.is_main_process and aim_run is not None:

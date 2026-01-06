@@ -127,12 +127,13 @@ def get_dataloader(
     batch_size: int,
     num_workers: int,
     prefetcher_factor: int,
+    infinite: bool = True,
 ) -> wds.WebDataset:
     """获得wds数据加载器"""
     dataset = (
         wds.WebDataset(
             url,
-            resampled=True,
+            resampled=infinite,
             nodesplitter=wds.split_by_node,
             workersplitter=wds.split_by_worker,
         )
