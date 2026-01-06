@@ -7,7 +7,7 @@ import torch.nn as nn
 from accelerate.logging import get_logger
 
 from ..constant import *
-from .hamer_module import Attention, PreNorm, FeedForward, default
+from .hamer_module import Attention, PreNorm, FeedForward, TransformerDecoder, default
 
 
 logger = get_logger(__name__)
@@ -72,11 +72,14 @@ class PerspInfoEmbedderDense(nn.Module):
         self,
         hidden_size: int,
         num_sample: int,
+        **kwargs,
     ):
         super(PerspInfoEmbedderDense, self).__init__()
+        assert kwargs["pie_fusion"] in ["cls", "patch", "all"]
 
         self.hidden_size = hidden_size
         self.num_sample = num_sample
+        self.pie_fusion = kwargs["pie_fusion"]
 
         in_dim = self.num_sample ** 2 * 2
         self.mlp = []
@@ -91,11 +94,13 @@ class PerspInfoEmbedderDense(nn.Module):
 
     def forward(
         self,
+        feats: torch.Tensor,
         bbox: torch.Tensor,
         focal: torch.Tensor,
         princpt: torch.Tensor
     ):
         """
+        feats: [b,n,d]
         bbox: [b,4] xyxy
         focal, princpt: [b,2]
         """
@@ -122,9 +127,82 @@ class PerspInfoEmbedderDense(nn.Module):
         directions = directions[..., :2]  # [b,p,p,2] discard z value
 
         flatten = eps.rearrange(directions, "b p q d -> b (p q d)")
-        persp_feat = self.mlp(flatten)
+        persp_feat = self.mlp(flatten) # [b,d]
 
-        return persp_feat
+        if self.pie_fusion == "cls":
+            feats[:, :0] = feats[:, :0] + persp_feat[:, None]
+        elif self.pie_fusion == "patch":
+            feats[:, 1:] = feats[:, 1:] + persp_feat[:, None]
+        elif self.pie_fusion == "all":
+            feats = feats + persp_feat[:, None]
+        else:
+            raise NotImplementedError(f"pie_fusion={self.pie_fusion} is not implemented.")
+
+        return feats
+
+
+class PerspInfoEmbedderCrossAttn(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_sample: int,
+        num_token: int,
+    ):
+        super().__init__()
+
+        self.hidden_size = hidden_size
+        self.num_sample = num_sample
+
+        self.net = TransformerDecoder(
+            num_tokens=num_token,
+            token_dim=self.hidden_size,
+            dim=self.hidden_size,
+            depth=1,
+            heads=8,
+            mlp_dim=4*self.hidden_size,
+            dim_head=64,
+            dropout=0.0,
+            emb_dropout=0.0,
+            emb_dropout_type="drop",
+            norm="layer",
+            norm_cond_dim=-1,
+            context_dim=2,
+            skip_token_embedding=False
+        )
+
+    def forward(
+        self,
+        feats: torch.Tensor,
+        bbox: torch.Tensor,
+        focal: torch.Tensor,
+        princpt: torch.Tensor
+    ):
+        grid = torch.linspace(
+            1 / self.num_sample * 0.5,
+            1 - 1 / self.num_sample * 0.5,
+            self.num_sample,
+            device=bbox.device,
+        )  # [p]
+        x_grid = (
+            bbox[:, 0:1] + (bbox[:, 2:3] - bbox[:, 0:1]) * grid[None, :]
+        )  # [b,p]
+        y_grid = (
+            bbox[:, 1:2] + (bbox[:, 3:4] - bbox[:, 1:2]) * grid[None, :]
+        )  # [b,p]
+        grid = torch.stack([
+            x_grid[:, :, None].expand(-1, -1, grid.shape[0]),
+            y_grid[:, None, :].expand(-1, grid.shape[0], -1),
+        ], dim=-1)# [b,p,p,2]
+
+        directions = (grid - princpt[:, None, None, :]) / focal[:, None, None, :]
+        directions = torch.cat([directions, torch.ones_like(directions[..., :1])], dim=-1)
+        directions = directions / torch.norm(directions, p="fro", dim=-1, keepdim=True)
+        directions = directions[..., :2]  # [b,p,p,2] discard z value
+        directions = eps.rearrange(directions, "b p q d -> b (p q) d") # [b,n,d]
+
+        out = self.net(feats, context=directions)
+
+        return out
 
 
 class ViTBackbone(nn.Module):

@@ -64,8 +64,9 @@ MODEL:
     context_dim: 1024
     skip_token_embed: true
   persp_info_embed:
-    num_sample: 16
-    pie_fusion: "patch"
+    type: "ca"
+    num_sample: 8
+    pie_fusion: "all"
   temporal_encoder:
     num_layer: 2
     num_head: 16

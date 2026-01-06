@@ -95,8 +95,9 @@ def setup_model(cfg: DictConfig):
         ndim_hf_ctx=cfg.MODEL.hand_feat_extractor.context_dim,
         hf_skip_token_embed=cfg.MODEL.hand_feat_extractor.skip_token_embed,
 
+        pie_type=cfg.MODEL.persp_info_embed.type,
         num_pie_sample=cfg.MODEL.persp_info_embed.num_sample,
-        pie_fusion=cfg.MODEL.persp_info_embed.pie_fusion,
+        pie_fusion=cfg.MODEL.persp_info_embed.get("pie_fusion", "all"),
 
         num_temporal_head=cfg.MODEL.temporal_encoder.num_head,
         num_temporal_layer=cfg.MODEL.temporal_encoder.num_layer,

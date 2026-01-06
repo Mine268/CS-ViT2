@@ -39,6 +39,7 @@ class PoseNet(nn.Module):
         ndim_hf_ctx: Optional[int],
         hf_skip_token_embed: bool,
         # PerspInfoEmbedderDense
+        pie_type: str,
         num_pie_sample: int,
         pie_fusion: str,
         # TemporalEncoder
@@ -71,14 +72,20 @@ class PoseNet(nn.Module):
         self.num_patch = self.backbone.get_num_patch()
 
         # Perspective Information Embedder
-        assert pie_fusion in ["cls", "patch", "all"]
-        assert pie_fusion == "patch" or not drop_cls
-        self.num_pie_sample = num_pie_sample
-        self.pie_fusion = pie_fusion
-        self.persp_info_embedder = PerspInfoEmbedderDense(
-            hidden_size=self.hidden_size,
-            num_sample=self.num_pie_sample,
-        )
+        if pie_type == "dense":
+            self.persp_info_embedder = PerspInfoEmbedderDense(
+                hidden_size=self.hidden_size,
+                num_sample=num_pie_sample,
+                pie_fusion=pie_fusion
+            )
+        elif pie_type == "ca":
+            self.persp_info_embedder = PerspInfoEmbedderCrossAttn(
+                hidden_size=self.hidden_size,
+                num_sample=num_pie_sample,
+                num_token=self.num_patch**2 + int(not self.drop_cls),
+            )
+        else:
+            raise NotImplementedError(f"pie_type={pie_type} not implemented.")
 
         # MANO
         self.register_buffer(
@@ -162,17 +169,12 @@ class PoseNet(nn.Module):
             feats = feats[:, 1:]
 
         # extract perspective feature
-        persp_feat = self.persp_info_embedder(
+        feats = self.persp_info_embedder(
+            feats=feats,
             bbox=bbox,
             focal=focal,
             princpt=princpt,
         )
-        if self.pie_fusion == "all":
-            feats += persp_feat[:, None]
-        if self.pie_fusion == "cls":
-            feats[:, 0] += persp_feat
-        if self.pie_fusion == "patch":
-            feats[:, 1:] += persp_feat[:, None]
 
         # extract hand feature
         query_tokens = self.query_tokens.expand(img.shape[0], -1, -1)
