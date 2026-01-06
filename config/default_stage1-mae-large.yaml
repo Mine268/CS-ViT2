@@ -11,6 +11,9 @@ hydra:
     root:
       handlers: []
 
+AIM:
+  server_url: aim://10.208.33.93:53800
+
 GENERAL:
   total_step: 100000
   log_step: 10
@@ -21,7 +24,6 @@ GENERAL:
   prefetch_factor: 2
   seed: 3229084
   resume_path: null
-  aim_path: /mnt/qnap/body/renkaiwen/aim/CS-ViT2/
 
 TRAIN:
   lr: 1e-5

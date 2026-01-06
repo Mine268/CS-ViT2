@@ -436,10 +436,10 @@ def main(cfg: DictConfig):
         # Run看板
         aim_run = Run(
             experiment=f"{date_str}_{time_str}_{config_name}",
-            repo=cfg.GENERAL.get("aim_path", "."),
+            repo=cfg.AIM.server_url,
         )
         aim_run["hparams"] = OmegaConf.to_container(cfg, resolve=True)
-        logger.info(f'Aim run initialized in {cfg.GENERAL.get("aim_path", ".")}')
+        logger.info(f'Aim run initialized in {cfg.AIM.server_url}')
 
     broadcast_object_list(save_dir_obj, from_process=0)
     save_dir = save_dir_obj[0]
