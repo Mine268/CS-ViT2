@@ -77,7 +77,7 @@ def setup_dataloader(cfg: DictConfig):
         num_frames=cfg.MODEL.num_frame,
         stride=cfg.DATA.val.stride,
         batch_size=cfg.TRAIN.sample_per_device,
-        num_workers=cfg.GENERAL.num_worker,
+        num_workers=1, # cfg.GENERAL.num_worker,
         prefetcher_factor=cfg.GENERAL.prefetch_factor,
         infinite=False,
     )
@@ -472,7 +472,7 @@ def main(cfg: DictConfig):
         accelerator=accelerator,
         net=net,
         optim=optim,
-        schedeuler=scheduler,
+        scheduler=scheduler,
         train_loader=train_loader,
         val_loader=val_loader,
         save_dir=save_dir,

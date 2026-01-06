@@ -44,6 +44,7 @@ DATA:
     stride: 1
   val:
     source: [
+      /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/val/*,
       /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/val/*,
     ]
     stride: 1
