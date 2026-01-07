@@ -35,7 +35,7 @@ def test_PoseNet1():
         trope_scalar=20.,
         zero_linear=True,
         #
-        detok_joint_type="3",
+        joint_rep_type="3",
         #
         kps3d_loss_type="l2",
         verts_loss_type="l2",
@@ -90,7 +90,7 @@ def test_PoseNet2():
         trope_scalar=20.,
         zero_linear=True,
         #
-        detok_joint_type="3",
+        joint_rep_type="3",
         #
         kps3d_loss_type="l2",
         verts_loss_type="l2",

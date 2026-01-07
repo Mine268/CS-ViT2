@@ -41,7 +41,8 @@
                 "--num_machines", "1",
                 "--mixed_precision", "no",
                 "-m", "script.stage1",
-                "--config-name", "default_stage1-mae-large"
+                "--config-name", "default_stage1-handec-large",
+                "AIM.server_url=."
             ],
             "justMyCode": true
         }

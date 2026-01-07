@@ -3,6 +3,7 @@ import itertools
 
 import numpy as np
 import torch.nn as nn
+import kornia
 import smplx
 
 from .loss import *
@@ -18,7 +19,7 @@ class PoseNet(nn.Module):
     def __init__(
         self,
         stage: Stage,
-        # DinoBackbone
+
         backbone_str: str,
         img_size: Optional[int],
         img_mean: List[float],
@@ -26,30 +27,30 @@ class PoseNet(nn.Module):
         infusion_feats_lyr: List[int],
         drop_cls: bool,
         backbone_kwargs: Optional[Dict],
-        # hand feat extractor
-        num_hf_layer: int,
-        num_hf_head: int,
-        ndim_hf_mlp: int,
-        ndim_hf_head: int,
-        prob_hf_dropout: float,
-        prob_hf_emb_dropout: float,
-        hf_emb_dropout_type: str,
-        hf_norm: str,
-        ndim_hf_norm_cond_dim: int,
-        ndim_hf_ctx: Optional[int],
-        hf_skip_token_embed: bool,
-        # PerspInfoEmbedderDense
+
+        num_handec_layer: int,
+        num_handec_head: int,
+        ndim_handec_mlp: int,
+        ndim_handec_head: int,
+        prob_handec_dropout: float,
+        prob_handec_emb_dropout: float,
+        handec_emb_dropout_type: str,
+        handec_norm: str,
+        ndim_handec_norm_cond_dim: int,
+        ndim_handec_ctx: Optional[int],
+        handec_skip_token_embed: bool,
+
         pie_type: str,
         num_pie_sample: int,
         pie_fusion: str,
-        # TemporalEncoder
+
         num_temporal_head: int,
         num_temporal_layer: int,
         trope_scalar: float,
         zero_linear: bool,
-        # MANOPoseDetokenizer
-        detok_joint_type: str,
-        # loss
+
+        joint_rep_type: str,
+
         kps3d_loss_type: str,
         verts_loss_type: str,
     ):
@@ -96,59 +97,55 @@ class PoseNet(nn.Module):
         self.rmano_layer.requires_grad_(False)
         self.rmano_layer.eval()
 
-        # Spatial encoder
-        self.query_tokens = nn.Parameter(
-            data=torch.randn(1, 3, self.hidden_size),
-            requires_grad=True,
-        )
-        self.hand_feat_encoder = TransformerDecoder(
-            num_tokens=3,
-            token_dim=self.hidden_size,
+        # handec
+        self.joint_rep_type = joint_rep_type
+        self.handec = MANOTransformerDecoderHead(
+            joint_rep_type=joint_rep_type,
             dim=self.hidden_size,
-            depth=num_hf_layer,
-            heads=num_hf_head,
-            mlp_dim=ndim_hf_mlp,
-            dim_head=ndim_hf_head,
-            dropout=prob_hf_dropout,
-            emb_dropout=prob_hf_emb_dropout,
-            emb_dropout_type=hf_emb_dropout_type,
-            norm=hf_norm,
-            norm_cond_dim=ndim_hf_norm_cond_dim,
-            context_dim=ndim_hf_ctx,
-            skip_token_embedding=hf_skip_token_embed,
+            depth=num_handec_layer,
+            heads=num_handec_head,
+            mlp_dim=ndim_handec_mlp,
+            dim_head=ndim_handec_head,
+            dropout=prob_handec_dropout,
+            emb_dropout=prob_handec_emb_dropout,
+            emb_dropout_type=handec_emb_dropout_type,
+            norm=handec_norm,
+            norm_cond_dim=ndim_handec_norm_cond_dim,
+            context_dim=ndim_handec_ctx,
+            skip_token_embedding=handec_skip_token_embed,
         )
 
         # Temporal encoder
-        self.pose_temporal_encoder = TemporalEncoder(
-            dim=self.hidden_size,
-            num_head=num_temporal_head,
-            num_layer=num_temporal_layer,
-            dropout=prob_hf_dropout,
-            trope_scalar=trope_scalar,
-            zero_linear=zero_linear,
-        )
-        self.shape_temporal_encoder = TemporalEncoder(
-            dim=self.hidden_size,
-            num_head=num_temporal_head,
-            num_layer=num_temporal_layer,
-            dropout=prob_hf_dropout,
-            trope_scalar=trope_scalar,
-            zero_linear=zero_linear,
-        )
-        self.trans_temporal_encoder = TemporalEncoder(
-            dim=self.hidden_size,
-            num_head=num_temporal_head,
-            num_layer=num_temporal_layer,
-            dropout=prob_hf_dropout,
-            trope_scalar=trope_scalar,
-            zero_linear=zero_linear,
-        )
+        # self.pose_temporal_encoder = TemporalEncoder(
+        #     dim=self.hidden_size,
+        #     num_head=num_temporal_head,
+        #     num_layer=num_temporal_layer,
+        #     dropout=prob_hf_dropout,
+        #     trope_scalar=trope_scalar,
+        #     zero_linear=zero_linear,
+        # )
+        # self.shape_temporal_encoder = TemporalEncoder(
+        #     dim=self.hidden_size,
+        #     num_head=num_temporal_head,
+        #     num_layer=num_temporal_layer,
+        #     dropout=prob_hf_dropout,
+        #     trope_scalar=trope_scalar,
+        #     zero_linear=zero_linear,
+        # )
+        # self.trans_temporal_encoder = TemporalEncoder(
+        #     dim=self.hidden_size,
+        #     num_head=num_temporal_head,
+        #     num_layer=num_temporal_layer,
+        #     dropout=prob_hf_dropout,
+        #     trope_scalar=trope_scalar,
+        #     zero_linear=zero_linear,
+        # )
 
         # MANO detokenizer
-        self.mano_detokenizer = MANOPoseDetokenizer(
-            dim=self.hidden_size,
-            joint_rep_type=detok_joint_type
-        )
+        # self.mano_detokenizer = MANOPoseDetokenizer(
+        #     dim=self.hidden_size,
+        #     joint_rep_type=detok_joint_type
+        # )
 
         # Loss
         self.kps3d_loss = Keypoint3DLoss(kps3d_loss_type)
@@ -156,7 +153,7 @@ class PoseNet(nn.Module):
         self.axis_loss = Axis3DLoss("l1")
         self.shape_loss = ShapeLoss("l1")
 
-    def extract_hand_feature(
+    def decode_hand_param(
         self,
         img: torch.Tensor,
         bbox: torch.Tensor,
@@ -176,20 +173,11 @@ class PoseNet(nn.Module):
             princpt=princpt,
         )
 
-        # extract hand feature
-        query_tokens = self.query_tokens.expand(img.shape[0], -1, -1)
-        hand_feats = self.hand_feat_encoder(query_tokens, context=feats) # [b,3,d] / [(bt),3,d]
+        # extract hand param
+        # [b,d], [b,10], [b,3]
+        pred_hand_pose, pred_shape, pred_trans = self.handec(feats)
 
-        # split into 3 seperate feature
-        # [b,d] / [(bt),d]
-        pose_token, shape_token, trans_token = torch.split(
-            hand_feats, split_size_or_sections=1, dim=-2
-        )
-        pose_token = pose_token.squeeze(dim=-2)
-        shape_token = shape_token.squeeze(dim=-2)
-        trans_token = trans_token.squeeze(dim=-2)
-
-        return pose_token, shape_token, trans_token
+        return pred_hand_pose, pred_shape, pred_trans
 
     def predict_mano_param(
         self,
@@ -221,26 +209,41 @@ class PoseNet(nn.Module):
         )
 
         # spatial encoding
-        pose_token, shape_token, trans_token = self.extract_hand_feature(
+        pose, shape, trans = self.decode_hand_param(
             img=img,
             bbox=bbox,
             focal=focal,
             princpt=princpt,
         )
 
+        if self.joint_rep_type == "6d":
+            pose = eps.rearrange(pose, "b (j d) -> (b j) d", j=MANO_JOINT_COUNT)
+            pose = rotation6d_to_rotation_matrix(pose) # [b,3,3]
+            pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(pose)
+            pose = eps.rearrange(eps, "(b j) d -> b (j d)", j=MANO_JOINT_COUNT)
+        elif self.joint_rep_type == "3":
+            pass
+        elif self.joint_rep_type == "quat":
+            pose = eps.rearrange(pose, "b (j d) -> (b j) d", j=MANO_JOINT_COUNT)
+            pose = kornia.geometry.conversions.quaternion_to_axis_angle(pose) # [b,4]
+            pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(pose)
+            pose = eps.rearrange(eps, "(b j) d -> b (j d)", j=MANO_JOINT_COUNT)
+        else:
+            raise NotImplementedError
+
         # temporal decoding
-        pose_token, shape_token, trans_token = map(
+        pose, shape, trans = map(
             lambda t: eps.rearrange(t, "(b t) d -> b t d", t=num_frame),
-            [pose_token, shape_token, trans_token]
+            [pose, shape, trans]
         )
-        if self.stage == PoseNet.Stage.STAGE2:
-            pose_token = pose_token + self.pose_temporal_encoder(pose_token, timestamp)
-            shape_token = shape_token + self.shape_temporal_encoder(shape_token, timestamp)
-            trans_token = trans_token + self.trans_temporal_encoder(trans_token, timestamp)
+        # if self.stage == PoseNet.Stage.STAGE2:
+        #     pose_token = pose_token + self.pose_temporal_encoder(pose_token, timestamp)
+        #     shape_token = shape_token + self.shape_temporal_encoder(shape_token, timestamp)
+        #     trans_token = trans_token + self.trans_temporal_encoder(trans_token, timestamp)
 
         # detokenize into pose
         # [b,d] [b,t,d]
-        pose, shape, trans = self.mano_detokenizer(pose_token, shape_token, trans_token)
+        # pose, shape, trans = self.mano_detokenizer(pose_token, shape_token, trans_token)
 
         return pose, shape, trans
 
@@ -322,10 +325,5 @@ class PoseNet(nn.Module):
     def get_regressor_params(self):
         return itertools.chain(
             self.persp_info_embedder.parameters(),
-            self.hand_feat_encoder.parameters(),
-            self.pose_temporal_encoder.parameters(),
-            self.shape_temporal_encoder.parameters(),
-            self.trans_temporal_encoder.parameters(),
-            self.mano_detokenizer.parameters(),
-            [self.query_tokens],
+            self.handec.parameters(),
         )

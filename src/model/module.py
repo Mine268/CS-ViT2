@@ -4,9 +4,12 @@ import einops as eps
 import transformers
 import torch
 import torch.nn as nn
+import kornia
+import numpy as np
 from accelerate.logging import get_logger
 
 from ..constant import *
+from ..utils.rot import *
 from .hamer_module import Attention, PreNorm, FeedForward, TransformerDecoder, default
 
 
@@ -432,6 +435,102 @@ class TRoPETransformerCrossAttn(nn.Module):
         return x
 
 
+# ref: hamer
+class MANOTransformerDecoderHead(nn.Module):
+    def __init__(
+        self,
+        joint_rep_type: str,
+        # num_tokens: int,
+        # token_dim: int,
+        dim: int,
+        depth: int,
+        heads: int,
+        mlp_dim: int,
+        dim_head: int = 64,
+        dropout: float = 0.0,
+        emb_dropout: float = 0.0,
+        emb_dropout_type: str = 'drop',
+        norm: str = "layer",
+        norm_cond_dim: int = -1,
+        context_dim: Optional[int] = None,
+        skip_token_embedding: bool = False,
+    ):
+        super().__init__()
+        assert joint_rep_type in JOINT_DIM_DICT
+
+        self.joint_rep_type = joint_rep_type
+        self.joint_dim = JOINT_DIM_DICT[joint_rep_type]
+        npose = self.joint_dim * MANO_JOINT_COUNT
+
+        self.transformer = TransformerDecoder(
+            num_tokens=1,
+            token_dim=(npose + MANO_SHAPE_DIM + 3),
+            dim=dim,
+            depth=depth,
+            heads=heads,
+            mlp_dim=mlp_dim,
+            dim_head=dim_head,
+            dropout=dropout,
+            emb_dropout=emb_dropout,
+            emb_dropout_type=emb_dropout_type,
+            norm=norm,
+            norm_cond_dim=norm_cond_dim,
+            context_dim=context_dim,
+            skip_token_embedding=skip_token_embedding
+        )
+
+        self.decpose = nn.Linear(dim, npose)
+        self.decshape = nn.Linear(dim, MANO_SHAPE_DIM)
+        self.deccam = nn.Linear(dim, 3)
+
+        mean_params = np.load(MANO_MEAN_NPZ)
+        # [96]
+        init_hand_pose = torch.from_numpy(mean_params['pose'].astype(np.float32))
+        if joint_rep_type == "6d":
+            pass
+        elif joint_rep_type == "3":
+            init_hand_pose = rotation6d_to_rotation_matrix(init_hand_pose.reshape(-1, 6))
+            init_hand_pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(
+                init_hand_pose
+            )
+            # [1,48]
+            init_hand_pose = torch.flatten(init_hand_pose).unsqueeze(0)
+        elif joint_rep_type == "quat":
+            init_hand_pose = rotation6d_to_rotation_matrix(init_hand_pose.reshape(-1, 6))
+            init_hand_pose = kornia.geometry.conversions.rotation_matrix_to_quaternion(
+                init_hand_pose
+            )
+            # [1,64]
+            init_hand_pose = torch.flatten(init_hand_pose).unsqueeze(0)
+        else:
+            raise NotImplementedError
+        # [1,10]
+        init_betas = torch.from_numpy(mean_params['shape'].astype('float32')).unsqueeze(0)
+        # [1,4]
+        init_cam = torch.from_numpy(mean_params['cam'].astype(np.float32)).unsqueeze(0)
+        self.register_buffer('init_hand_pose', init_hand_pose)
+        self.register_buffer('init_betas', init_betas)
+        self.register_buffer('init_cam', init_cam)
+
+    def forward(self, x: torch.Tensor):
+        batch_size = x.shape[0]
+
+        init_hand_pose = self.init_hand_pose.expand(batch_size, -1)
+        init_betas = self.init_betas.expand(batch_size, -1)
+        init_cam = self.init_cam.expand(batch_size, -1)
+
+        # [b,1,npose+10+3]
+        token = torch.cat([init_hand_pose, init_betas, init_cam], dim=1)[:, None, :]
+        token_out = self.transformer(token, context=x)
+        token_out = token_out.squeeze(1)
+
+        pred_hand_pose = self.decpose(token_out) + init_hand_pose
+        pred_betas = self.decshape(token_out) + init_betas
+        pred_cam = self.deccam(token_out) + init_cam
+
+        return pred_hand_pose, pred_betas, pred_cam
+
+
 class TemporalEncoder(nn.Module):
     def __init__(
         self,
@@ -490,12 +589,10 @@ class TemporalEncoder(nn.Module):
 
 
 class MANOPoseDetokenizer(nn.Module):
-    joint_dim_dict = {"6d": 6, "3": 3, "quat": 4}
-
     def __init__(self, dim: int, joint_rep_type: str):
         super(MANOPoseDetokenizer, self).__init__()
-        assert joint_rep_type in MANOPoseDetokenizer.joint_dim_dict
-        joint_dim: int = MANOPoseDetokenizer.joint_dim_dict[joint_rep_type]
+        assert joint_rep_type in JOINT_DIM_DICT
+        joint_dim: int = JOINT_DIM_DICT[joint_rep_type]
 
         self.pose_linear = nn.Linear(dim, MANO_JOINT_COUNT * joint_dim, bias=True)
         self.shape_linear = nn.Linear(dim, MANO_SHAPE_DIM, bias=True)
