@@ -5,6 +5,10 @@ import kornia.geometry.transform as KT
 import kornia.geometry.conversions as KC
 import kornia.augmentation as KA
 
+from ..utils.rot import *
+from ..constant import *
+
+
 class PixelLevelAugmentation(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -178,6 +182,7 @@ def preprocess_batch(
     scale_z_range: Tuple[float, float],
     scale_f_range: Tuple[float, float],
     persp_rot_max: float,
+    joint_rep_type: str,
     augmentation_flag: bool,
     device: torch.device
 ):
@@ -410,6 +415,26 @@ def preprocess_batch(
             mano_pose[bx] = rearrange(mano_pose_bx, "t j d -> t (j d)")
 
             princpt[bx, :, 0] = W - princpt[bx, :, 0]
+
+    # 更新旋转表示
+    if joint_rep_type == "3":
+        pass
+    elif joint_rep_type == "6d":
+        B, T = mano_pose.shape[:2]
+        mano_pose = rearrange(mano_pose, "b t (j d) -> (b t j) d", j=MANO_JOINT_COUNT)
+        mano_pose = KC.axis_angle_to_rotation_matrix(mano_pose) # [N,3,3]
+        mano_pose = rotation_matrix_to_rotation6d(mano_pose)
+        mano_pose = rearrange(mano_pose, "(b t j) d -> b t (j d)", b=B, t=T)
+    elif joint_rep_type == "quat":
+        B, T = mano_pose.shape[:2]
+        mano_pose = rearrange(mano_pose, "b t (j d) -> (b t j) d", j=MANO_JOINT_COUNT)
+        mano_pose = KC.axis_angle_to_quaternion(mano_pose) # [N,4]
+        mano_pose = rearrange(mano_pose, "(b t j) d -> b t (j d)", b=B, t=T)
+    else:
+        raise NotImplementedError(f"Unsupported rotation type={joint_rep_type}")
+
+    if mano_pose[mano_valid > 0.5].isnan().any().cpu().item():
+        raise ValueError("MANO contains NaN")
 
     return {
         "imgs_path": imgs_path,

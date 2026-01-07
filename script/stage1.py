@@ -300,6 +300,7 @@ def train(
             scale_z_range=cfg.TRAIN.scale_z_range,
             scale_f_range=cfg.TRAIN.scale_f_range,
             persp_rot_max=cfg.TRAIN.persp_rot_max,
+            joint_rep_type=cfg.MODEL.joint_type,
             augmentation_flag=True,
             device=device
         )

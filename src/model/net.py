@@ -215,20 +215,20 @@ class PoseNet(nn.Module):
             princpt=princpt,
         )
 
-        if self.joint_rep_type == "6d":
-            pose = eps.rearrange(pose, "b (j d) -> (b j) d", j=MANO_JOINT_COUNT)
-            pose = rotation6d_to_rotation_matrix(pose) # [b,3,3]
-            pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(pose)
-            pose = eps.rearrange(eps, "(b j) d -> b (j d)", j=MANO_JOINT_COUNT)
-        elif self.joint_rep_type == "3":
-            pass
-        elif self.joint_rep_type == "quat":
-            pose = eps.rearrange(pose, "b (j d) -> (b j) d", j=MANO_JOINT_COUNT)
-            pose = kornia.geometry.conversions.quaternion_to_axis_angle(pose) # [b,4]
-            pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(pose)
-            pose = eps.rearrange(eps, "(b j) d -> b (j d)", j=MANO_JOINT_COUNT)
-        else:
-            raise NotImplementedError
+        # if self.joint_rep_type == "6d":
+        #     pose = eps.rearrange(pose, "b (j d) -> (b j) d", j=MANO_JOINT_COUNT)
+        #     pose = rotation6d_to_rotation_matrix(pose) # [b,3,3]
+        #     pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(pose)
+        #     pose = eps.rearrange(eps, "(b j) d -> b (j d)", j=MANO_JOINT_COUNT)
+        # elif self.joint_rep_type == "3":
+        #     pass
+        # elif self.joint_rep_type == "quat":
+        #     pose = eps.rearrange(pose, "b (j d) -> (b j) d", j=MANO_JOINT_COUNT)
+        #     pose = kornia.geometry.conversions.quaternion_to_axis_angle(pose) # [b,4]
+        #     pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(pose)
+        #     pose = eps.rearrange(eps, "(b j) d -> b (j d)", j=MANO_JOINT_COUNT)
+        # else:
+        #     raise NotImplementedError
 
         # temporal decoding
         pose, shape, trans = map(
@@ -252,6 +252,22 @@ class PoseNet(nn.Module):
 
         shape = eps.rearrange(shape, "b t d -> (b t) d")
         pose = eps.rearrange(pose, "b t d -> (b t) d")
+
+        if self.joint_rep_type == "6d":
+            pose_aa = eps.rearrange(pose, "b (j d) -> (b j) d", j=MANO_JOINT_COUNT)
+            pose_aa = rotation6d_to_rotation_matrix(pose_aa)
+            pose_aa = kornia.geometry.conversions.rotation_matrix_to_axis_angle(pose_aa)
+            pose_aa = eps.rearrange(pose_aa, "(b j) d -> b (j d)", j=MANO_JOINT_COUNT)
+            pose = pose_aa
+        elif self.joint_rep_type == "quat":
+            pose_aa = eps.rearrange(pose, "b (j d) -> (b j) d", j=MANO_JOINT_COUNT)
+            pose_aa = kornia.geometry.conversions.quaternion_to_axis_angle(pose_aa)
+            pose_aa = eps.rearrange(pose_aa, "(b j) d -> b (j d)", j=MANO_JOINT_COUNT)
+            pose = pose_aa
+        elif self.joint_rep_type == "3":
+            pass
+        else:
+            raise NotImplementedError(f"Unsupported rotation type={self.joint_rep_type}")
 
         mano_output = self.rmano_layer(
             betas=shape,
