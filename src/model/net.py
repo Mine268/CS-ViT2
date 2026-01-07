@@ -148,10 +148,9 @@ class PoseNet(nn.Module):
         # )
 
         # Loss
-        self.kps3d_loss = Keypoint3DLoss(kps3d_loss_type)
-        self.verts_loss = VertsLoss(verts_loss_type)
-        self.axis_loss = Axis3DLoss("l1")
-        self.shape_loss = ShapeLoss("l1")
+        self.kps3d_loss = Keypoint3DLoss(kps3d_loss_type, 1e-3)
+        self.verts_loss = VertsLoss(verts_loss_type, 1e-3)
+        self.param_loss = ParameterLoss()
 
     def decode_hand_param(
         self,
@@ -299,21 +298,30 @@ class PoseNet(nn.Module):
         # 3. loss: 3d joint, 3d verts, 3d axis, shape
         loss_kps3d = self.kps3d_loss(joint_cam_pred, batch["joint_cam"], batch["joint_valid"])
         loss_verts = self.verts_loss(verts_cam_pred, verts_cam_gt, batch["mano_valid"])
-        loss_axis = self.axis_loss(pose_pred, batch["mano_pose"], batch["mano_valid"])
-        loss_shape = self.shape_loss(shape_pred, batch["mano_shape"], batch["mano_valid"])
+        loss_param = self.param_loss(
+            torch.cat([pose_pred, shape_pred, trans_pred * 1e-3], dim=-1),
+            torch.cat(
+                [
+                    batch["mano_pose"],
+                    batch["mano_shape"],
+                    batch["joint_cam"][:, :, 0] * 1e-3,
+                ],
+                dim=-1,
+            ),
+            batch["mano_valid"]
+        )
 
         loss_state = {
-            "loss": loss_kps3d + loss_verts + loss_axis + loss_shape,
+            "loss": loss_kps3d + loss_verts + loss_param,
             "state": {
                 "loss_kps3d": loss_kps3d.detach(),
                 "loss_verts": loss_verts.detach(),
-                "loss_axis": loss_axis.detach(),
-                "loss_shape": loss_shape.detach(),
+                "loss_param": loss_param.detach(),
             },
             "result": {
                 "joint_cam_pred": joint_cam_pred.detach(),
                 "verts_cam_pred": verts_cam_pred.detach(),
-                "verts_cam_gt": verts_cam_gt.detach()
+                "verts_cam_gt": verts_cam_gt.detach(),
             }
         }
 

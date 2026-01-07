@@ -27,7 +27,7 @@ def robust_masked_mean(loss: torch.Tensor, mask: torch.Tensor):
         return total_loss * 0.0
 
 class Keypoint3DLoss(nn.Module):
-    def __init__(self, loss_type: str = 'l1'):
+    def __init__(self, loss_type: str = 'l1', scale: float = 1.0):
         """
         3D keypoint loss module.
         """
@@ -39,12 +39,16 @@ class Keypoint3DLoss(nn.Module):
         else:
             raise NotImplementedError('Unsupported loss function')
 
+        self.scale = scale
+
     def forward(self, pred: torch.Tensor, gt: torch.Tensor, valid: torch.Tensor):
         """
         pred, gt: [b,t,j,d]
         valid: [b,t,j]
         """
         # 1. 计算所有维度的元素级损失 [b,t,j,d]
+        pred = pred * self.scale
+        gt = gt * self.scale
         raw_loss = self.loss_fn(pred, gt)
 
         # 2. 计算二维距离
@@ -82,7 +86,7 @@ class Axis3DLoss(nn.Module):
         return robust_masked_mean(raw_loss, valid_mask)
 
 class VertsLoss(nn.Module):
-    def __init__(self, loss_type: str = 'l1'):
+    def __init__(self, loss_type: str = 'l1', scale: float = 1.0):
         """
         Mesh vertices loss module.
         """
@@ -94,12 +98,16 @@ class VertsLoss(nn.Module):
         else:
             raise NotImplementedError('Unsupported loss function')
 
+        self.scale = scale
+
     def forward(self, pred: torch.Tensor, gt: torch.Tensor, valid: torch.Tensor):
         """
         pred, gt: [b,t,v,3]
         valid: [b,t]
         """
         # 1. 计算元素级损失 [b,t,v,3]
+        pred = pred * self.scale
+        gt = gt * self.scale
         raw_loss = self.loss_fn(pred, gt)
 
         # 2. 按照原定义：先对顶点和坐标维求均值 -> [b,t]
@@ -130,6 +138,29 @@ class ShapeLoss(nn.Module):
         raw_loss = self.loss_fn(pred, gt)
 
         # 2. 按照原定义：先对 shape 参数维求均值 -> [b,t]
+        per_frame_loss = torch.mean(raw_loss, dim=-1)
+
+        # 3. 对 [b,t] 维度的 loss 应用 mask
+        return robust_masked_mean(per_frame_loss, valid)
+
+
+class ParameterLoss(nn.Module):
+
+    def __init__(self):
+        """
+        MANO parameter loss module.
+        """
+        super(ParameterLoss, self).__init__()
+        self.loss_fn = nn.MSELoss(reduction='none')
+
+    def forward(self, pred: torch.Tensor, gt: torch.Tensor, valid: torch.Tensor):
+        """
+        pred, gt: [b,t,d]
+        valid: [b,t]
+        """
+        # 1. 计算元素级损失 [b,t,d]
+        raw_loss = self.loss_fn(pred, gt)
+
         per_frame_loss = torch.mean(raw_loss, dim=-1)
 
         # 3. 对 [b,t] 维度的 loss 应用 mask

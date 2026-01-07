@@ -42,9 +42,13 @@
                 "--mixed_precision", "no",
                 "-m", "script.stage1",
                 "--config-name", "default_stage1-handec-large",
-                "AIM.server_url=."
+                "AIM.server_url=.",
+                "TRAIN.sample_per_device=16"
             ],
-            "justMyCode": true
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "3"
+            }
         }
 
     ]
