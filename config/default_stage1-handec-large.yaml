@@ -75,6 +75,7 @@ MODEL:
     norm: layer
     context_dim: 1024
     skip_token_embed: false
+    use_mean_init: false
   persp_info_embed:
     type: "ca"
     num_sample: 8
@@ -88,3 +89,4 @@ MODEL:
 LOSS:
   kps3d_loss_type: "l1"
   verts_loss_type: "l1"
+  param_loss_type: "l1"

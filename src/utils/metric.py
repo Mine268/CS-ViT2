@@ -1,0 +1,81 @@
+import torch
+
+
+def compute_mpjpe_stats(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor = None):
+    """
+    计算 MPJPE 的累积统计量。
+
+    Args:
+        pred: 预测的关节坐标 [B, T, J, 3] 或 [..., J, 3]
+        gt: 真实的关节坐标，形状同 pred
+        mask: 关节有效性掩码 [B, T, J] 或 [..., J]。如果为 None，则计算所有点。
+              (对应原代码中的 joint_valid)
+
+    Returns:
+        tuple: (batch_total_error, batch_total_count)
+               - batch_total_error: 当前 batch 所有有效关节的误差之和 (float)
+               - batch_total_count: 当前 batch 有效关节的总数 (int)
+    """
+    # 1. 计算欧式距离 (L2 Norm)
+    # [B, T, J, 3] -> [B, T, J]
+    error_per_joint = torch.norm(pred - gt, p=2, dim=-1)
+
+    # 2. 如果没有 mask，假定全部有效
+    if mask is None:
+        return error_per_joint.sum(), error_per_joint.numel()
+
+    # 3. 应用 Mask
+    # 确保 mask 是布尔类型
+    mask_bool = mask > 0.5
+
+    if mask_bool.any():
+        # error_per_joint[mask_bool] 会展平为一维向量
+        batch_total_error = error_per_joint[mask_bool].sum()
+        batch_total_count = mask_bool.sum()
+        return batch_total_error, batch_total_count
+    else:
+        # 如果当前 batch 没有有效数据
+        return torch.tensor(0.0, device=pred.device), torch.tensor(0.0, device=pred.device)
+
+
+def compute_mpvpe_stats(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor = None):
+    """
+    计算 MPVPE 的累积统计量。
+
+    Args:
+        pred: 预测的顶点坐标 [B, T, V, 3]
+        gt: 真实的顶点坐标 [B, T, V, 3]
+        mask: 手部/帧级有效性掩码 [B, T]。注意这里维度通常比 pred 少一维。
+              (对应原代码中的 mano_valid)
+
+    Returns:
+        tuple: (batch_total_error, batch_total_count)
+    """
+    # 1. 基础检查
+    if pred is None or gt is None:
+        return torch.tensor(0.0), torch.tensor(0.0)
+
+    # 2. 计算欧式距离
+    # [B, T, V, 3] -> [B, T, V]
+    error_per_vertex = torch.norm(pred - gt, p=2, dim=-1)
+
+    # 3. 处理 Mask
+    # 原逻辑中 metrics_accum[3] += verts_error[mask_v].numel()
+    # 意味着 mask [B, T] 广播到了 [B, T, V]
+
+    if mask is None:
+        return error_per_vertex.sum(), error_per_vertex.numel()
+
+    mask_bool = mask > 0.5 # [B, T]
+
+    if mask_bool.any():
+        # 利用 PyTorch 的高级索引:
+        # error_per_vertex[mask_bool] 会选出 mask 为 True 的那些帧的所有顶点
+        # 结果形状为 [N_valid_frames, V]
+        valid_errors = error_per_vertex[mask_bool]
+
+        batch_total_error = valid_errors.sum()
+        batch_total_count = valid_errors.numel() # 自动计算 N_valid_frames * V
+        return batch_total_error, batch_total_count
+    else:
+        return torch.tensor(0.0, device=pred.device), torch.tensor(0.0, device=pred.device)

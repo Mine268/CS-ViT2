@@ -109,6 +109,7 @@ def setup_model(cfg: DictConfig):
         ndim_handec_norm_cond_dim=-1,
         ndim_handec_ctx=cfg.MODEL.handec.context_dim,
         handec_skip_token_embed=cfg.MODEL.handec.skip_token_embed,
+        handec_mean_init=cfg.MODEL.handec.get("use_mean_init", True),
 
         pie_type=cfg.MODEL.persp_info_embed.type,
         num_pie_sample=cfg.MODEL.persp_info_embed.num_sample,
@@ -123,6 +124,7 @@ def setup_model(cfg: DictConfig):
 
         kps3d_loss_type=cfg.LOSS.kps3d_loss_type,
         verts_loss_type=cfg.LOSS.verts_loss_type,
+        param_loss_type=cfg.LOSS.get("param_loss_type", "l1")
     )
 
     return net
@@ -197,6 +199,7 @@ def val(
             scale_z_range=cfg.TRAIN.scale_z_range,
             scale_f_range=cfg.TRAIN.scale_f_range,
             persp_rot_max=cfg.TRAIN.persp_rot_max,
+            joint_rep_type=cfg.MODEL.joint_type,
             augmentation_flag=False,
             device=device
         )

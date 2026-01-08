@@ -146,12 +146,17 @@ class ShapeLoss(nn.Module):
 
 class ParameterLoss(nn.Module):
 
-    def __init__(self):
+    def __init__(self, loss_type: str = 'l2'):
         """
         MANO parameter loss module.
         """
         super(ParameterLoss, self).__init__()
-        self.loss_fn = nn.MSELoss(reduction='none')
+        if loss_type == 'l1':
+            self.loss_fn = nn.L1Loss(reduction='none')
+        elif loss_type == 'l2':
+            self.loss_fn = nn.MSELoss(reduction='none')
+        else:
+            raise NotImplementedError('Unsupported loss function')
 
     def forward(self, pred: torch.Tensor, gt: torch.Tensor, valid: torch.Tensor):
         """

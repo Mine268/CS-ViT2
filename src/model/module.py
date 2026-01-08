@@ -454,6 +454,7 @@ class MANOTransformerDecoderHead(nn.Module):
         norm_cond_dim: int = -1,
         context_dim: Optional[int] = None,
         skip_token_embedding: bool = False,
+        use_mean_init: bool = True,
     ):
         super().__init__()
         assert joint_rep_type in JOINT_DIM_DICT
@@ -483,31 +484,37 @@ class MANOTransformerDecoderHead(nn.Module):
         self.decshape = nn.Linear(dim, MANO_SHAPE_DIM)
         self.deccam = nn.Linear(dim, 3)
 
-        mean_params = np.load(MANO_MEAN_NPZ)
-        # [96]
-        init_hand_pose = torch.from_numpy(mean_params['pose'].astype(np.float32))
-        if joint_rep_type == "6d":
-            pass
-        elif joint_rep_type == "3":
-            init_hand_pose = rotation6d_to_rotation_matrix(init_hand_pose.reshape(-1, 6))
-            init_hand_pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(
-                init_hand_pose
-            )
-            # [1,48]
-            init_hand_pose = torch.flatten(init_hand_pose).unsqueeze(0)
-        elif joint_rep_type == "quat":
-            init_hand_pose = rotation6d_to_rotation_matrix(init_hand_pose.reshape(-1, 6))
-            init_hand_pose = kornia.geometry.conversions.rotation_matrix_to_quaternion(
-                init_hand_pose
-            )
-            # [1,64]
-            init_hand_pose = torch.flatten(init_hand_pose).unsqueeze(0)
+        if use_mean_init:
+            mean_params = np.load(MANO_MEAN_NPZ)
+            # [96]
+            init_hand_pose = torch.from_numpy(mean_params['pose'].astype(np.float32))
+            if joint_rep_type == "6d":
+                pass
+            elif joint_rep_type == "3":
+                init_hand_pose = rotation6d_to_rotation_matrix(init_hand_pose.reshape(-1, 6))
+                init_hand_pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(
+                    init_hand_pose
+                )
+                # [1,48]
+                init_hand_pose = torch.flatten(init_hand_pose).unsqueeze(0)
+            elif joint_rep_type == "quat":
+                init_hand_pose = rotation6d_to_rotation_matrix(init_hand_pose.reshape(-1, 6))
+                init_hand_pose = kornia.geometry.conversions.rotation_matrix_to_quaternion(
+                    init_hand_pose
+                )
+                # [1,64]
+                init_hand_pose = torch.flatten(init_hand_pose).unsqueeze(0)
+            else:
+                raise NotImplementedError
+            # [1,10]
+            init_betas = torch.from_numpy(mean_params['shape'].astype('float32')).unsqueeze(0)
+            # [1,3]
+            init_cam = torch.from_numpy(mean_params['cam'].astype(np.float32)).unsqueeze(0)
         else:
-            raise NotImplementedError
-        # [1,10]
-        init_betas = torch.from_numpy(mean_params['shape'].astype('float32')).unsqueeze(0)
-        # [1,4]
-        init_cam = torch.from_numpy(mean_params['cam'].astype(np.float32)).unsqueeze(0)
+            npose = JOINT_DIM_DICT[joint_rep_type] * MANO_JOINT_COUNT
+            init_hand_pose = torch.randn(size=(1, npose))
+            init_betas = torch.randn(size=(1, MANO_SHAPE_DIM))
+            init_cam = torch.randn(size=(1, 3))
         self.register_buffer('init_hand_pose', init_hand_pose)
         self.register_buffer('init_betas', init_betas)
         self.register_buffer('init_cam', init_cam)
@@ -524,9 +531,9 @@ class MANOTransformerDecoderHead(nn.Module):
         token_out = self.transformer(token, context=x)
         token_out = token_out.squeeze(1)
 
-        pred_hand_pose = self.decpose(token_out) + init_hand_pose
-        pred_betas = self.decshape(token_out) + init_betas
-        pred_cam = self.deccam(token_out) + init_cam
+        pred_hand_pose = self.decpose(token_out) # + init_hand_pose
+        pred_betas = self.decshape(token_out) # + init_betas
+        pred_cam = self.deccam(token_out) # + init_cam
 
         return pred_hand_pose, pred_betas, pred_cam
 
