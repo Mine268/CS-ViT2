@@ -110,6 +110,7 @@ def setup_model(cfg: DictConfig):
         ndim_handec_ctx=cfg.MODEL.handec.context_dim,
         handec_skip_token_embed=cfg.MODEL.handec.skip_token_embed,
         handec_mean_init=cfg.MODEL.handec.get("use_mean_init", True),
+        handec_denorm_output=cfg.MODEL.handec.get("denorm_output", False),
 
         pie_type=cfg.MODEL.persp_info_embed.type,
         num_pie_sample=cfg.MODEL.persp_info_embed.num_sample,

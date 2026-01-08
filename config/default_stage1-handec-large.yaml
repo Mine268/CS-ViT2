@@ -76,6 +76,7 @@ MODEL:
     context_dim: 1024
     skip_token_embed: false
     use_mean_init: false
+    denorm_output: true
   persp_info_embed:
     type: "ca"
     num_sample: 8

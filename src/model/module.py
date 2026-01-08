@@ -455,6 +455,7 @@ class MANOTransformerDecoderHead(nn.Module):
         context_dim: Optional[int] = None,
         skip_token_embedding: bool = False,
         use_mean_init: bool = True,
+        denorm_output: bool = False,
     ):
         super().__init__()
         assert joint_rep_type in JOINT_DIM_DICT
@@ -484,6 +485,7 @@ class MANOTransformerDecoderHead(nn.Module):
         self.decshape = nn.Linear(dim, MANO_SHAPE_DIM)
         self.deccam = nn.Linear(dim, 3)
 
+        self.npose = JOINT_DIM_DICT[joint_rep_type] * MANO_JOINT_COUNT
         if use_mean_init:
             mean_params = np.load(MANO_MEAN_NPZ)
             # [96]
@@ -519,6 +521,23 @@ class MANOTransformerDecoderHead(nn.Module):
         self.register_buffer('init_betas', init_betas)
         self.register_buffer('init_cam', init_cam)
 
+        if denorm_output:
+            assert (
+                joint_rep_type == "3"
+            ), f"Only supports denorm_output for joint_rep_type={joint_rep_type}"
+            self.denorm_output = denorm_output
+            mano_stats = np.load(MANO_STAT_NPZ)
+            # [61]
+            mano_mean = torch.from_numpy(mano_stats["mean"].astype(np.float32))
+            # [61,61]
+            mano_cov = torch.from_numpy(mano_stats["cov"].astype(np.float32))
+            # Cholesky
+            eye = torch.eye(mano_cov.shape[0], dtype=torch.float32)
+            lmat = torch.linalg.cholesky(mano_cov + eye * 1e-6)
+
+            self.register_buffer("scale_tril", lmat.transpose(-1, -2))
+            self.register_buffer("output_mean", mano_mean)
+
     def forward(self, x: torch.Tensor):
         batch_size = x.shape[0]
 
@@ -534,6 +553,15 @@ class MANOTransformerDecoderHead(nn.Module):
         pred_hand_pose = self.decpose(token_out) # + init_hand_pose
         pred_betas = self.decshape(token_out) # + init_betas
         pred_cam = self.deccam(token_out) # + init_cam
+
+        if self.denorm_output:
+            # [b,d]
+            pred_mano_param = torch.cat([pred_hand_pose, pred_betas, pred_cam], dim=-1)
+            pred_mano_param = pred_mano_param @ self.scale_tril + self.output_mean[None, :]
+
+            pred_hand_pose = pred_mano_param[:, :self.npose]
+            pred_betas = pred_mano_param[:, self.npose : self.npose + MANO_SHAPE_DIM]
+            pred_cam = pred_mano_param[:, -3:]
 
         return pred_hand_pose, pred_betas, pred_cam
 

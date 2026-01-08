@@ -41,6 +41,7 @@ class PoseNet(nn.Module):
         ndim_handec_ctx: Optional[int],
         handec_skip_token_embed: bool,
         handec_mean_init: bool,
+        handec_denorm_output: bool,
 
         pie_type: str,
         num_pie_sample: int,
@@ -117,6 +118,7 @@ class PoseNet(nn.Module):
             context_dim=ndim_handec_ctx,
             skip_token_embedding=handec_skip_token_embed,
             use_mean_init=handec_mean_init,
+            denorm_output=handec_denorm_output,
         )
 
         # Temporal encoder
@@ -319,12 +321,12 @@ class PoseNet(nn.Module):
         # loss_kps3d = self.kps3d_loss(joint_cam_pred, batch["joint_cam"], batch["joint_valid"])
         # loss_verts = self.verts_loss(verts_cam_pred, verts_cam_gt, batch["mano_valid"])
         loss_param = self.param_loss(
-            torch.cat([pose_pred, shape_pred, trans_pred * 1e-2], dim=-1),
+            torch.cat([pose_pred, shape_pred, trans_pred], dim=-1),
             torch.cat(
                 [
                     batch["mano_pose"],
                     batch["mano_shape"],
-                    batch["joint_cam"][:, :, 0] * 1e-2,
+                    batch["joint_cam"][:, :, 0],
                 ],
                 dim=-1,
             ),
