@@ -21,8 +21,9 @@ class PoseNet(nn.Module):
         self,
         stage: Stage,
 
+        backbone_type: str,
         backbone_str: str,
-        img_size: Optional[int],
+        img_size: Optional[Union[int, Tuple[int, int]]],
         img_mean: List[float],
         img_std: List[float],
         infusion_feats_lyr: List[int],
@@ -63,7 +64,9 @@ class PoseNet(nn.Module):
         self.stage = stage
         # Image encoder
         backbone_kwargs = default(backbone_kwargs, {})
-        self.backbone = ViTBackbone(
+        # Use factory class to create backbone
+        self.backbone = VisionBackbone.create(
+            backbone_type=backbone_type,
             backbone_str=backbone_str,
             img_size=img_size,
             infusion_feats_lyr=infusion_feats_lyr,
@@ -78,6 +81,16 @@ class PoseNet(nn.Module):
         self.num_patch = self.backbone.get_num_patch()
 
         # Perspective Information Embedder
+        # Calculate num_token based on whether img_size is square or not
+        if isinstance(self.img_size, tuple):
+            # Non-square input (e.g., VitPose 256x192)
+            # num_patch is already the total number of patches (h * w)
+            num_token = self.num_patch + int(not self.drop_cls)
+        else:
+            # Square input (e.g., ViT 224x224)
+            # num_patch is the number of patches per side, so total is num_patch**2
+            num_token = self.num_patch**2 + int(not self.drop_cls)
+
         if pie_type == "dense":
             self.persp_info_embedder = PerspInfoEmbedderDense(
                 hidden_size=self.hidden_size,
@@ -88,7 +101,7 @@ class PoseNet(nn.Module):
             self.persp_info_embedder = PerspInfoEmbedderCrossAttn(
                 hidden_size=self.hidden_size,
                 num_sample=num_pie_sample,
-                num_token=self.num_patch**2 + int(not self.drop_cls),
+                num_token=num_token,
             )
         else:
             raise NotImplementedError(f"pie_type={pie_type} not implemented.")

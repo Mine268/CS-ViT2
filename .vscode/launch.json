@@ -41,7 +41,7 @@
                 "--num_machines", "1",
                 "--mixed_precision", "no",
                 "-m", "script.stage1",
-                "--config-name", "default_stage1-handec-large",
+                "--config-name", "default_stage1-vitpose-large",
                 "AIM.server_url=.",
                 "TRAIN.sample_per_device=36",
                 "MODEL.joint_type=\"3\""

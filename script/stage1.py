@@ -90,6 +90,7 @@ def setup_model(cfg: DictConfig):
     net = PoseNet(
         stage=cfg.MODEL.stage,
 
+        backbone_type=cfg.MODEL.backbone.get("backbone_type", "vit"),
         backbone_str=cfg.MODEL.backbone.backbone_str,
         img_size=cfg.MODEL.img_size,
         img_mean=cfg.MODEL.img_mean,
@@ -196,7 +197,7 @@ def val(
 
         batch, _ = preprocess_batch(
             batch_origin=batch_,
-            patch_size=[cfg.MODEL.img_size, cfg.MODEL.img_size],
+            patch_size=(cfg.MODEL.img_size, cfg.MODEL.img_size),
             patch_expanstion=cfg.TRAIN.expansion_ratio,
             scale_z_range=cfg.TRAIN.scale_z_range,
             scale_f_range=cfg.TRAIN.scale_f_range,
@@ -300,7 +301,7 @@ def train(
         batch_ = next(data_iter)
         batch, trans_2d_mat = preprocess_batch(
             batch_origin=batch_,
-            patch_size=[cfg.MODEL.img_size, cfg.MODEL.img_size],
+            patch_size=(cfg.MODEL.img_size, cfg.MODEL.img_size),
             patch_expanstion=cfg.TRAIN.expansion_ratio,
             scale_z_range=cfg.TRAIN.scale_z_range,
             scale_f_range=cfg.TRAIN.scale_f_range,
@@ -346,7 +347,7 @@ def train(
                         cfg.DATA.val.get("max_val_step", 1000),
                     )
                     logger.info(f"validation finished, mpjpe={val_result['mpjpe']}, "
-                        f"mpvpe={val_result["mpvpe"]}")
+                        f"mpvpe={val_result['mpvpe']}")
 
                     if aim_run is not None and accelerator.is_main_process:
                         for k, v in val_result.items():

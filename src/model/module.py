@@ -336,6 +336,218 @@ class ViTBackbone(nn.Module):
         return self.num_patch
 
 
+class VitposeBackbone(nn.Module):
+    def __init__(
+        self,
+        backbone_str: str,
+        img_size: Optional[Union[int, Tuple[int, int]]],
+        infusion_feats_lyr: List[int],
+        backbone_kwargs: Dict,
+    ):
+        super(VitposeBackbone, self).__init__()
+
+        self.backbone_str = backbone_str
+        self.infusion_feats_lyr = infusion_feats_lyr
+
+        # read model config
+        backbone_cfg = transformers.AutoConfig.from_pretrained(self.backbone_str)
+        # VitPose 的配置在 backbone_config 中
+        if hasattr(backbone_cfg, 'backbone_config'):
+            vitpose_backbone_cfg = backbone_cfg.backbone_config
+            # self.patch_size = vitpose_backbone_cfg.patch_size if hasattr(vitpose_backbone_cfg, 'patch_size') else 16
+            self.patch_size = 16
+            self.hidden_size = vitpose_backbone_cfg.hidden_size
+        else:
+            # 如果没有 backbone_config，尝试从主配置读取
+            self.patch_size = getattr(backbone_cfg, 'patch_size', 16)
+            self.hidden_size = backbone_cfg.hidden_size
+
+        # VitPose 的输入处理：
+        # - 预处理阶段输入为正方形 (img_size x img_size)，例如 256x256
+        # - forward 时裁切为 256x192 (上下各裁切 32 像素)
+        if img_size is None:
+            # 默认使用 256
+            self.input_img_size = 256
+            logger.info("No img_size provided for backbone. Using default input_img_size=256.")
+        elif isinstance(img_size, int):
+            self.input_img_size = img_size
+        elif isinstance(img_size, (list, tuple)):
+            # 如果传入元组，使用第一个值作为输入尺寸
+            self.input_img_size = img_size[0]
+            logger.warning(f"Provided img_size={img_size} is a tuple. "
+                f"Using first value {self.input_img_size} as input_img_size.")
+        else:
+            raise ValueError(f"Unsupported img_size type: {type(img_size)}")
+
+        # VitPose 实际输入尺寸为 256x192 (从 256x256 裁切而来)
+        # 上下各裁切 32 像素: (256 - 32*2) = 192
+        self.crop_top = 32
+        self.crop_bottom = 32
+        self.actual_img_h = self.input_img_size - self.crop_top - self.crop_bottom  # 192
+        self.actual_img_w = self.input_img_size  # 256
+
+        # post configuration
+        assert (
+            self.actual_img_h % self.patch_size == 0 and self.actual_img_w % self.patch_size == 0
+        ), f"actual_img_size=({self.actual_img_h}, {self.actual_img_w}) and patch_size={self.patch_size} is not consistent."
+        self.num_patch_h = self.actual_img_h // self.patch_size
+        self.num_patch_w = self.actual_img_w // self.patch_size
+        self.num_patch = self.num_patch_h * self.num_patch_w
+
+        # 保存用于外部访问的 img_size (返回实际输入尺寸)
+        self.img_size = (self.actual_img_h, self.actual_img_w)
+
+        # backbone - 使用 VitPoseForPoseEstimation
+        # 注意：VitPoseForPoseEstimation 默认输出 heatmap，我们需要获取隐藏层
+        self.vitpose_model = transformers.VitPoseForPoseEstimation.from_pretrained(
+            self.backbone_str,
+            **backbone_kwargs,
+        )
+        # 获取 backbone 部分来提取隐藏层
+        # VitPoseForPoseEstimation 的 vit 属性包含实际的视觉编码器
+        self.backbone = self.vitpose_model.backbone
+
+        # multi-layer fusion
+        if self.infusion_feats_lyr is not None:
+            self.proj_size = 64
+            self.projection_cls = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(self.hidden_size, self.proj_size, bias=True),
+                    nn.BatchNorm1d(self.proj_size),
+                    nn.ReLU(),
+                ) for _ in range(len(self.infusion_feats_lyr))
+            ])
+            self.projections_map = nn.ModuleList([
+                nn.Sequential(
+                    nn.Conv2d(self.hidden_size, self.proj_size, kernel_size=1),
+                    nn.BatchNorm2d(self.proj_size),
+                    nn.ReLU(),
+                ) for _ in range(len(self.infusion_feats_lyr))
+            ])
+            self.fusion_cls = nn.Sequential(
+                nn.Linear(
+                    self.proj_size * len(self.infusion_feats_lyr),
+                    self.hidden_size,
+                    bias=True
+                ),
+                nn.BatchNorm1d(self.hidden_size),
+                nn.ReLU(),
+            )
+            self.fusion_conv = nn.Sequential(
+                nn.Conv2d(
+                    self.proj_size * len(self.infusion_feats_lyr),
+                    self.hidden_size,
+                    kernel_size=3,
+                    padding=1,
+                ),
+                nn.BatchNorm2d(self.hidden_size),
+                nn.ReLU()
+            )
+
+    def forward(self, x: torch.Tensor):
+        # 输入应该是正方形 (例如 256x256)
+        assert (
+            x.shape[-2] == self.input_img_size and x.shape[-1] == self.input_img_size
+        ), f"Input tensor shape {x.shape} is not consistent with input_img_size={self.input_img_size}"
+
+        # 裁切图像：从 256x256 裁切为 256x192 (上下各裁切 32 像素)
+        x_cropped = x[..., self.crop_top:self.input_img_size - self.crop_bottom]
+
+        # 使用 backbone 获取隐藏状态
+        # 直接调用 backbone 的 forward 方法，传入 output_hidden_states=True
+        # transformers 的 ViT 模型支持 output_hidden_states 参数
+        backbone_output = self.backbone(
+            x_cropped,
+            dataset_index=torch.tensor([0], device=x.device),
+            output_hidden_states=True
+        )
+
+        if self.infusion_feats_lyr is not None:
+            hidden_states = backbone_output.hidden_states
+            hidden_states = [hidden_states[i] for i in self.infusion_feats_lyr]
+            token_clss, token_patches = [], []
+            for l in range(len(self.infusion_feats_lyr)):
+                token_cls, token_patch = hidden_states[l][:, 0], hidden_states[l][:, 1:]
+                token_patch = eps.rearrange(
+                    token_patch, "b (h w) c -> b c h w",
+                    h=self.num_patch_h, w=self.num_patch_w
+                )
+                token_cls = self.projection_cls[l](token_cls)
+                token_patch = self.projections_map[l](token_patch)
+                token_clss.append(token_cls)
+                token_patches.append(token_patch)
+            token_clss = torch.cat(token_clss, dim=-1)
+            token_patches = torch.cat(token_patches, dim=1)
+            token_clss = self.fusion_cls(token_clss)
+            token_patches = self.fusion_conv(token_patches)
+            token_patches = eps.rearrange(token_patches, "b c h w -> b (h w) c")
+            hidden_state = torch.cat([token_clss[:, None], token_patches], dim=1)
+        else:
+            hidden_state = backbone_output.hidden_states[-1]
+
+        return hidden_state
+
+    '''
+    explicitly expose the member
+    '''
+    def get_patch_size(self):
+        return self.patch_size
+
+    def get_hidden_size(self):
+        return self.hidden_size
+
+    def get_img_size(self):
+        return self.img_size
+
+    def get_num_patch(self):
+        return self.num_patch
+
+
+class VisionBackbone:
+    """Factory class for creating different vision backbones based on configuration."""
+
+    @staticmethod
+    def create(
+        backbone_type: str,
+        backbone_str: str,
+        img_size: Optional[Union[int, Tuple[int, int]]],
+        infusion_feats_lyr: List[int],
+        backbone_kwargs: Dict,
+    ) -> Union[ViTBackbone, VitposeBackbone]:
+        """
+        Create a vision backbone based on the backbone_type.
+
+        Args:
+            backbone_type: Type of backbone, either "vit" or "vitpose"
+            backbone_str: Path or identifier to the pretrained model
+            img_size: Image size (int for square, tuple for non-square)
+            infusion_feats_lyr: List of layer indices for feature infusion
+            backbone_kwargs: Additional kwargs for backbone initialization
+
+        Returns:
+            An instance of ViTBackbone or VitposeBackbone
+        """
+        if backbone_type.lower() == "vit" or backbone_type.lower() == "vitbackbone":
+            return ViTBackbone(
+                backbone_str=backbone_str,
+                img_size=img_size,
+                infusion_feats_lyr=infusion_feats_lyr,
+                backbone_kwargs=backbone_kwargs,
+            )
+        elif backbone_type.lower() == "vitpose" or backbone_type.lower() == "vitposebackbone":
+            return VitposeBackbone(
+                backbone_str=backbone_str,
+                img_size=img_size,
+                infusion_feats_lyr=infusion_feats_lyr,
+                backbone_kwargs=backbone_kwargs,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported backbone_type: {backbone_type}. "
+                f"Supported types: 'vit', 'vitpose'"
+            )
+
+
 class TRoPECrossAttention(nn.Module):
 
     def __init__(self, dim, context_dim=None, heads=8, dim_head=64, dropout=0.0):
