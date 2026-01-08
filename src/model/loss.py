@@ -1,3 +1,5 @@
+from typing import *
+
 import torch
 import torch.nn as nn
 
@@ -170,3 +172,86 @@ class ParameterLoss(nn.Module):
 
         # 3. 对 [b,t] 维度的 loss 应用 mask
         return robust_masked_mean(per_frame_loss, valid)
+
+
+class BundleLoss(nn.Module):
+    def __init__(
+        self,
+        rel: float,
+        glo: float,
+        supervise_global: bool,
+    ):
+        super().__init__()
+        self.mse = nn.MSELoss(reduction="none")
+        self.l1 = nn.L1Loss(reduction="none")
+
+        self.rel, self.glo = rel, glo
+        self.supervise_global = supervise_global
+
+    def proj_x3d(self, x3d: torch.Tensor, focal: torch.Tensor, princpt: torch.Tensor):
+        """
+        x3d: [b,t,j,d]
+        focal, princpt: [b,t,2]
+        return: [b,t,j,2]
+        """
+        u = x3d[:, :, :, 0] * focal[:, :, :1] / x3d[:, :, :, 2] + princpt[:, :, :1]
+        v = x3d[:, :, :, 1] * focal[:, :, 1:] / x3d[:, :, :, 2] + princpt[:, :, 1:]
+        return torch.cat([u, v], dim=-1)
+
+    def forward(
+        self,
+        pose_pred: torch.Tensor,
+        shape_pred: torch.Tensor,
+        trans_pred: torch.Tensor,
+        joint_rel_pred: torch.Tensor,
+        verts_rel_pred: torch.Tensor,
+        verts_rel_gt: torch.Tensor,
+        batch: Dict[str, torch.Tensor]
+    ):
+        joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
+        joint_cam_gt = batch["joint_cam"]
+        joint_rel_gt = batch["joint_rel"]
+        mano_valid = batch["mano_valid"] # [b,t]
+        joint_valid = batch["joint_valid"] # [b,t,j]
+
+        loss_theta = self.mse(pose_pred, batch["mano_pose"]) # [b,t,d]
+        loss_theta = torch.mean(loss_theta * mano_valid[..., None])
+        loss_shape = self.mse(shape_pred, batch["mano_shape"]) # [b,t,d]
+        loss_shape = torch.mean(loss_shape * mano_valid[..., None])
+
+        if self.supervise_global:
+            loss_joint_root = self.l1(trans_pred, joint_cam_gt[:, :, 0]) # [b,t,d]
+            loss_joint_root = torch.mean(loss_joint_root * joint_valid[:, :, 0])
+
+            loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt) # [b,t,j,d]
+            loss_joint_rel = torch.mean(loss_joint_rel * joint_valid[..., None])
+
+            joint_proj_pred = self.proj_x3d(
+                joint_cam_pred, focal=batch["focal"], princpt=batch["princpt"]
+            )
+            joint_proj_gt = self.proj_x3d(
+                joint_cam_gt, focal=batch["focal"], princpt=batch["princpt"]
+            )
+            loss_proj = self.l1(joint_proj_pred, joint_proj_gt) # [b,t,j,d]
+            loss_proj = torch.mean(loss_proj * joint_valid[..., None])
+
+            loss_joint = self.glo * (loss_joint_root + loss_proj) + self.rel * loss_joint_rel
+
+            sub_state = {
+                "loss_joint_root": loss_joint_root.detach(),
+                "loss_joint_rel": loss_joint_rel.detach(),
+                "loss_proj": loss_proj.detach(),
+            }
+        else:
+            loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt) # [b,t,j,d]
+            loss_joint = torch.mean(loss_joint_rel * joint_valid[..., None])
+
+            sub_state = {}
+
+        loss = loss_theta + loss_shape + loss_joint
+
+        return loss, {
+            "loss_theta": loss_theta.detach(),
+            "loss_shape": loss_shape.detach(),
+            "loss_joint": loss_joint.detach()
+        } | sub_state

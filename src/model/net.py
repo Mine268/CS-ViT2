@@ -155,10 +155,11 @@ class PoseNet(nn.Module):
         # )
 
         # Loss
-        self.kps3d_loss = Keypoint3DLoss(kps3d_loss_type, 1e-3)
-        self.verts_loss = VertsLoss(verts_loss_type, 1e-3)
-        self.param_loss = ParameterLoss(param_loss_type)
         self.supervise_global = supervise_global
+        self.loss_fn = BundleLoss(1.0, 1.0, supervise_global)
+        # self.kps3d_loss = Keypoint3DLoss(kps3d_loss_type, 1e-3)
+        # self.verts_loss = VertsLoss(verts_loss_type, 1e-3)
+        # self.param_loss = ParameterLoss(param_loss_type)
 
     def decode_hand_param(
         self,
@@ -254,7 +255,7 @@ class PoseNet(nn.Module):
 
         return pose, shape, trans
 
-    def mano_to_pose(self, pose, shape, trans):
+    def mano_to_pose(self, pose, shape):
         batch_size, _, _ = pose.shape
         njoint_hand = self.J_regressor_mano.shape[0]
 
@@ -288,19 +289,20 @@ class PoseNet(nn.Module):
             "nvd,jv->njd",
             mano_output.vertices, self.J_regressor_mano
         )
+        joint_root_detach = joints[:, :1].detach()
 
         # [B,T,V,3]
-        verts_cam = rearrange(
-            (mano_output.vertices - joints[:, :1]) * 1e3, # to mm
+        verts_rel = rearrange(
+            (mano_output.vertices - joint_root_detach) * 1e3, # to mm
             "(b t) v d -> b t v d", b=batch_size
-        ) + trans[:, :, None]
+        )
         # [B,T,J,3]
-        joint_cam = rearrange(
-            (joints - joints[:, :1]) * 1e3,
+        joint_rel = rearrange(
+            (joints - joint_root_detach) * 1e3,
             "(b t) j d -> b t j d", b=batch_size, j=njoint_hand
-        ) + trans[:, :, None]
+        )
 
-        return joint_cam, verts_cam
+        return joint_rel, verts_rel
 
     def forward(self, batch):
         # 1. forward
@@ -314,81 +316,54 @@ class PoseNet(nn.Module):
 
         # 2. fk
         with torch.no_grad():
-            _, verts_cam_gt = self.mano_to_pose(
+            _, verts_rel_gt = self.mano_to_pose(
                 batch["mano_pose"],
                 batch["mano_shape"],
-                batch["joint_cam"][:, :, 0],
+                # batch["joint_cam"][:, :, 0],
             )
-        joint_cam_pred, verts_cam_pred = self.mano_to_pose(pose_pred, shape_pred, trans_pred)
-
-        # 3. loss: 3d joint, 3d verts, 3d axis, shape
-        loss_kps3d_cam = self.kps3d_loss(joint_cam_pred, batch["joint_cam"], batch["joint_valid"])
-        loss_kps3d_rel = self.kps3d_loss(
-            joint_cam_pred - joint_cam_pred[:, :, :1],
-            batch["joint_rel"],
-            batch["joint_valid"],
-        )
-        loss_verts_rel = self.verts_loss(
-            verts_cam_pred - joint_cam_pred[:, :, :1],
-            verts_cam_gt - batch["joint_cam"][:, :, :1],
-            batch["mano_valid"],
-        )
-        loss_param = self.param_loss(
-            torch.cat(
-                [
-                    pose_pred,
-                    shape_pred,
-                    trans_pred,
-                ],
-                dim=-1
-            ),
-            torch.cat(
-                [
-                    batch["mano_pose"],
-                    batch["mano_shape"],
-                    batch["joint_cam"][:, :, 0],
-                ],
-                dim=-1,
-            ),
-            batch["mano_valid"]
+        joint_rel_pred, verts_rel_pred = self.mano_to_pose(
+            pose_pred, shape_pred # , trans_pred
         )
 
-        if self.supervise_global:
-            loss = loss_kps3d_cam + loss_kps3d_rel + loss_verts_rel + loss_param
-        else:
-            loss = loss_kps3d_rel + loss_verts_rel
+        # 3. loss
+        loss, loss_state = self.loss_fn(
+            pose_pred,
+            shape_pred,
+            trans_pred,
+            joint_rel_pred,
+            verts_rel_pred,
+            verts_rel_gt,
+            batch,
+        )
 
         # 4. micro metric
         with torch.no_grad():
             micro_mpjpe = compute_mpjpe_stats(
-                joint_cam_pred, batch["joint_cam"], batch["joint_valid"]
+                joint_rel_pred, batch["joint_cam"], batch["joint_valid"]
             )
             micro_mpjpe = micro_mpjpe[0] / micro_mpjpe[1]
 
             micro_mpjpe_rel = compute_mpjpe_stats(
-                joint_cam_pred - joint_cam_pred[:, :, :1],
+                joint_rel_pred - joint_rel_pred[:, :, :1],
                 batch["joint_cam"] - batch["joint_cam"][:, :, :1],
                 batch["joint_valid"]
             )
             micro_mpjpe_rel = micro_mpjpe_rel[0] / micro_mpjpe_rel[1]
 
-            micro_mpvpe = compute_mpvpe_stats(verts_cam_pred, verts_cam_gt, batch["mano_valid"])
+            verts_cam_gt = verts_rel_gt + batch["joint_cam"][:, :, :1]
+            micro_mpvpe = compute_mpvpe_stats(verts_rel_pred, verts_cam_gt, batch["mano_valid"])
             micro_mpvpe = micro_mpvpe[0] / micro_mpvpe[1]
 
         loss_state = {
             "loss": loss,
-            "state": {
-                "loss_kps3d_cam": loss_kps3d_cam.detach(),
-                "loss_kps3d_rel": loss_kps3d_rel.detach(),
-                "loss_verts_rel": loss_verts_rel.detach(),
-                "loss_param": loss_param.detach(),
+            "state": loss_state | {
                 "micro_mpjpe": micro_mpjpe.detach(),
                 "micro_mpjpe_rel": micro_mpjpe_rel.detach(),
                 "micro_mpvpe": micro_mpvpe.detach(),
             },
             "result": {
-                "joint_cam_pred": joint_cam_pred.detach(),
-                "verts_cam_pred": verts_cam_pred.detach(),
+                "joint_cam_pred": joint_rel_pred.detach(),
+                "verts_cam_pred": verts_rel_pred.detach(),
                 "verts_cam_gt": verts_cam_gt.detach(),
             }
         }
