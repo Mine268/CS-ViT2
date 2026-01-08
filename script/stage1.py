@@ -125,7 +125,8 @@ def setup_model(cfg: DictConfig):
 
         kps3d_loss_type=cfg.LOSS.kps3d_loss_type,
         verts_loss_type=cfg.LOSS.verts_loss_type,
-        param_loss_type=cfg.LOSS.get("param_loss_type", "l1")
+        param_loss_type=cfg.LOSS.get("param_loss_type", "l1"),
+        supervise_global=cfg.LOSS.get("supervise_global", True),
     )
 
     return net

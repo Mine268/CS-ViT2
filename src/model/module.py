@@ -173,6 +173,9 @@ class PerspInfoEmbedderCrossAttn(nn.Module):
             skip_token_embedding=False
         )
 
+        self.zero_linear = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+        nn.init.zeros_(self.zero_linear.weight)
+
     def forward(
         self,
         feats: torch.Tensor,
@@ -204,6 +207,8 @@ class PerspInfoEmbedderCrossAttn(nn.Module):
         directions = eps.rearrange(directions, "b p q d -> b (p q) d") # [b,n,d]
 
         out = self.net(feats, context=directions)
+        out = self.zero_linear(out)
+        out = out + feats
 
         return out
 

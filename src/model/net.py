@@ -57,6 +57,7 @@ class PoseNet(nn.Module):
         kps3d_loss_type: str,
         verts_loss_type: str,
         param_loss_type: str,
+        supervise_global: bool,
     ):
         super(PoseNet, self).__init__()
         self.stage = stage
@@ -157,6 +158,7 @@ class PoseNet(nn.Module):
         self.kps3d_loss = Keypoint3DLoss(kps3d_loss_type, 1e-3)
         self.verts_loss = VertsLoss(verts_loss_type, 1e-3)
         self.param_loss = ParameterLoss(param_loss_type)
+        self.supervise_global = supervise_global
 
     def decode_hand_param(
         self,
@@ -313,15 +315,33 @@ class PoseNet(nn.Module):
         # 2. fk
         with torch.no_grad():
             _, verts_cam_gt = self.mano_to_pose(
-                batch["mano_pose"], batch["mano_shape"], batch["joint_cam"][:, :, 0]
+                batch["mano_pose"],
+                batch["mano_shape"],
+                batch["joint_cam"][:, :, 0],
             )
         joint_cam_pred, verts_cam_pred = self.mano_to_pose(pose_pred, shape_pred, trans_pred)
 
         # 3. loss: 3d joint, 3d verts, 3d axis, shape
-        # loss_kps3d = self.kps3d_loss(joint_cam_pred, batch["joint_cam"], batch["joint_valid"])
-        # loss_verts = self.verts_loss(verts_cam_pred, verts_cam_gt, batch["mano_valid"])
+        loss_kps3d_cam = self.kps3d_loss(joint_cam_pred, batch["joint_cam"], batch["joint_valid"])
+        loss_kps3d_rel = self.kps3d_loss(
+            joint_cam_pred - joint_cam_pred[:, :, :1],
+            batch["joint_rel"],
+            batch["joint_valid"],
+        )
+        loss_verts_rel = self.verts_loss(
+            verts_cam_pred - joint_cam_pred[:, :, :1],
+            verts_cam_gt - batch["joint_cam"][:, :, :1],
+            batch["mano_valid"],
+        )
         loss_param = self.param_loss(
-            torch.cat([pose_pred, shape_pred, trans_pred], dim=-1),
+            torch.cat(
+                [
+                    pose_pred,
+                    shape_pred,
+                    trans_pred,
+                ],
+                dim=-1
+            ),
             torch.cat(
                 [
                     batch["mano_pose"],
@@ -332,6 +352,11 @@ class PoseNet(nn.Module):
             ),
             batch["mano_valid"]
         )
+
+        if self.supervise_global:
+            loss = loss_kps3d_cam + loss_kps3d_rel + loss_verts_rel + loss_param
+        else:
+            loss = loss_kps3d_rel + loss_verts_rel
 
         # 4. micro metric
         with torch.no_grad():
@@ -351,10 +376,11 @@ class PoseNet(nn.Module):
             micro_mpvpe = micro_mpvpe[0] / micro_mpvpe[1]
 
         loss_state = {
-            "loss": loss_param,
+            "loss": loss,
             "state": {
-                # "loss_kps3d": loss_kps3d.detach(),
-                # "loss_verts": loss_verts.detach(),
+                "loss_kps3d_cam": loss_kps3d_cam.detach(),
+                "loss_kps3d_rel": loss_kps3d_rel.detach(),
+                "loss_verts_rel": loss_verts_rel.detach(),
                 "loss_param": loss_param.detach(),
                 "micro_mpjpe": micro_mpjpe.detach(),
                 "micro_mpjpe_rel": micro_mpjpe_rel.detach(),

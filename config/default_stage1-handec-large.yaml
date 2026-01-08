@@ -61,11 +61,11 @@ MODEL:
   num_frame: 1
   joint_type: "3"
   backbone:
-    backbone_str: model/facebook/vit-mae-large
-    infusion_layer: [2, 8, 16, 24]
+    backbone_str: model/facebook/dinov2-large
+    infusion_layer: null
     drop_cls: false
     kwargs:
-      mask_ratio: 0.0
+      # mask_ratio: 0.0
   handec:
     num_layer: 6
     num_head: 16
@@ -91,3 +91,5 @@ LOSS:
   kps3d_loss_type: "l1"
   verts_loss_type: "l1"
   param_loss_type: "l1"
+
+  supervise_global: false
