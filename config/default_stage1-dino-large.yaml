@@ -11,9 +11,6 @@ hydra:
     root:
       handlers: []
 
-AIM:
-  server_url: aim://10.208.33.93:53800
-
 GENERAL:
   total_step: 100000
   log_step: 10
@@ -25,17 +22,20 @@ GENERAL:
   seed: 3229084
   resume_path: null
 
+AIM:
+  server_url: aim://10.208.33.93:53800
+
 TRAIN:
   lr: 1e-4
   backbone_lr: 1e-5
   grad_accum_step: 1
   max_grad: 1.0
   weight_decay: 1e-4
-  sample_per_device: 42
-  expansion_ratio: 2.0
-  scale_z_range: [0.9, 1.1]
-  scale_f_range: [0.9, 1.1]
-  persp_rot_max: 0.001 # pi/12
+  sample_per_device: 36
+  expansion_ratio: 1.1
+  scale_z_range: [0.7, 1.3]
+  scale_f_range: [0.8, 1.2]
+  persp_rot_max: 0.2617993877991494 # pi/12
 
 DATA:
   train:
@@ -51,7 +51,6 @@ DATA:
       /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/val/*,
     ]
     stride: 1
-    max_val_step: 1000
 
 MODEL:
   img_size: 224
@@ -59,14 +58,12 @@ MODEL:
   img_std: [0.229, 0.224, 0.225]
   stage: stage1
   num_frame: 1
-  joint_type: "3"
   backbone:
     backbone_str: model/facebook/dinov2-large
-    infusion_layer: null
+    infusion_layer: [2, 6, 10]
     drop_cls: false
-    kwargs:
-      # mask_ratio: 0.0
-  handec:
+    kwargs: null
+  hand_feat_extractor:
     num_layer: 6
     num_head: 16
     dim_head: 64
@@ -74,9 +71,7 @@ MODEL:
     dropout: 0.0
     norm: layer
     context_dim: 1024
-    skip_token_embed: false
-    use_mean_init: false
-    denorm_output: false
+    skip_token_embed: true
   persp_info_embed:
     type: "ca"
     num_sample: 8
@@ -86,10 +81,9 @@ MODEL:
     num_head: 16
     trope_scalar: 20.0
     zero_linear: true
+  detokenizer:
+    joint_type: "3"
 
 LOSS:
   kps3d_loss_type: "l1"
   verts_loss_type: "l1"
-  param_loss_type: "l1"
-
-  supervise_global: true
