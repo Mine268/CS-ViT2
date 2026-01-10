@@ -440,6 +440,38 @@ class TRoPETransformerCrossAttn(nn.Module):
         return x
 
 
+class SoftargmaxHead3D(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        n_sample: int,
+        x_range, y_range, z_range
+    ):
+        super().__init__()
+
+        self.decx = nn.Linear(dim, n_sample, bias=False)
+        self.decy = nn.Linear(dim, n_sample, bias=False)
+        self.decz = nn.Linear(dim, n_sample * 2, bias=True)
+
+        self.register_buffer("x_centers", torch.linspace(x_range[0], x_range[1], n_sample))
+        self.register_buffer("y_centers", torch.linspace(y_range[0], y_range[1], n_sample))
+        self.register_buffer("z_centers", torch.linspace(z_range[0], z_range[1], n_sample * 2))
+
+    def forward(self, token: torch.Tensor):
+        """
+        token: [...,d]
+        """
+        logit_x = torch.nn.functional.softmax(self.decx(token), dim=-1)
+        logit_y = torch.nn.functional.softmax(self.decy(token), dim=-1)
+        logit_z = torch.nn.functional.softmax(self.decz(token), dim=-1)
+
+        pred_x = torch.sum(logit_x * self.x_centers[None, :], dim=-1, keepdim=True)
+        pred_y = torch.sum(logit_y * self.y_centers[None, :], dim=-1, keepdim=True)
+        pred_z = torch.sum(logit_z * self.z_centers[None, :], dim=-1, keepdim=True)
+
+        return torch.cat([pred_x, pred_y, pred_z], dim=-1) # [...,3]
+
+
 # ref: hamer
 class MANOTransformerDecoderHead(nn.Module):
     def __init__(
@@ -488,7 +520,13 @@ class MANOTransformerDecoderHead(nn.Module):
 
         self.decpose = nn.Linear(dim, npose)
         self.decshape = nn.Linear(dim, MANO_SHAPE_DIM)
-        self.deccam = nn.Linear(dim, 3)
+        self.deccam = SoftargmaxHead3D(
+            dim,
+            192,
+            [-1000., 1000.],
+            [-1000., 1000.],
+            [0., 2000.],
+        )
 
         self.npose = JOINT_DIM_DICT[joint_rep_type] * MANO_JOINT_COUNT
         if use_mean_init:
@@ -526,11 +564,11 @@ class MANOTransformerDecoderHead(nn.Module):
         self.register_buffer('init_betas', init_betas)
         self.register_buffer('init_cam', init_cam)
 
+        self.denorm_output = denorm_output
         if denorm_output:
             assert (
                 joint_rep_type == "3"
             ), f"Only supports denorm_output for joint_rep_type={joint_rep_type}"
-            self.denorm_output = denorm_output
             mano_stats = np.load(MANO_STAT_NPZ)
             # [61]
             mano_mean = torch.from_numpy(mano_stats["mean"].astype(np.float32))
