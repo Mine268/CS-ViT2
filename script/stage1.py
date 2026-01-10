@@ -441,7 +441,7 @@ def main(cfg: DictConfig):
 
         # Run看板
         aim_run = Run(
-            experiment=f"{date_str}_{time_str}_{config_name}",
+            experiment=f"{config_name}",
             repo=cfg.AIM.server_url,
         )
         aim_run["hparams"] = OmegaConf.to_container(cfg, resolve=True)
