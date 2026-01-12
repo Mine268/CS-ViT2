@@ -396,7 +396,11 @@ def train(
                     logger.info(fmt)
 
                 # 6. 可视化
-                if global_step % vis_step == 0:
+                if (
+                    accelerator.is_main_process
+                    and aim_run is not None
+                    and global_step % vis_step == 0
+                ):
                     logger.info("visualizing the result to aim.")
 
                     img_vis_np = vis(batch, trans_2d_mat, output["result"], 0)
