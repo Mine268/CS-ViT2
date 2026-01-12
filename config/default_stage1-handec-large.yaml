@@ -17,6 +17,7 @@ AIM:
 GENERAL:
   total_step: 100000
   log_step: 10
+  vis_step: 100
   checkpoint_step: 3000
   warmup_step: 5000
   cosine_cycle: 0.5
@@ -27,15 +28,15 @@ GENERAL:
 
 TRAIN:
   lr: 1e-4
-  backbone_lr: 1e-5
+  backbone_lr: null
   grad_accum_step: 1
   max_grad: 1.0
   weight_decay: 1e-4
   sample_per_device: 42
   expansion_ratio: 2.0
-  scale_z_range: [0.9, 1.1]
-  scale_f_range: [0.9, 1.1]
-  persp_rot_max: 0.001 # pi/12
+  scale_z_range: [0.8, 1.2]
+  scale_f_range: [0.8, 1.2]
+  persp_rot_max: 0.2617993877991494 # pi/12
 
 DATA:
   train:
@@ -67,7 +68,7 @@ MODEL:
     kwargs:
       # mask_ratio: 0.0
   handec:
-    num_layer: 6
+    num_layer: 4
     num_head: 16
     dim_head: 64
     dim_mlp: 4096

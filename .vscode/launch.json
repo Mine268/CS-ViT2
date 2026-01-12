@@ -46,7 +46,8 @@
                 "TRAIN.sample_per_device=16",
                 "MODEL.joint_type=\"3\"",
                 "MODEL.handec.denorm_output=false",
-                "GENERAL.resume_path=checkpoint/10-01-2026/16-53-08_default_stage1-handec-large/checkpoints/checkpoint-72000"
+                // "GENERAL.resume_path=checkpoint/10-01-2026/16-53-08_default_stage1-handec-large/checkpoints/checkpoint-72000",
+                "GENERAL.vis_step=10"
             ],
             "justMyCode": true,
             "env": {

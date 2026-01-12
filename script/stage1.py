@@ -16,11 +16,12 @@ from accelerate import Accelerator, DistributedDataParallelKwargs, InitProcessGr
 from accelerate.utils import set_seed, broadcast_object_list
 from accelerate.logging import get_logger
 
-from aim import Run
+from aim import Run, Image
 
 from src.data.dataloader import get_dataloader
 from src.data.preprocess import preprocess_batch
 from src.model.net import PoseNet
+from src.utils.vis import vis
 
 
 logger = get_logger(__name__)
@@ -133,17 +134,22 @@ def setup_model(cfg: DictConfig):
 
 
 def setup_optim(cfg: DictConfig, net: nn.Module):
-    optim = torch.optim.AdamW(
-        params=[
-            {
-                "params": filter(lambda p: p.requires_grad, net.get_regressor_params()),
-                "lr": cfg.TRAIN.lr,
-            },
+    params = [
+        {
+            "params": filter(lambda p: p.requires_grad, net.get_regressor_params()),
+            "lr": cfg.TRAIN.lr,
+        },
+    ]
+    if cfg.TRAIN.backbone_lr is not None:
+        params.append(
             {
                 "params": filter(lambda p: p.requires_grad, net.get_backbone_params()),
                 "lr": cfg.TRAIN.backbone_lr,
             }
-        ],
+        )
+
+    optim = torch.optim.AdamW(
+        params=params,
         weight_decay=cfg.TRAIN.weight_decay,
     )
 
@@ -285,6 +291,7 @@ def train(
     # steps
     total_step: int = cfg.GENERAL.total_step
     log_step: int = cfg.GENERAL.log_step
+    vis_step: int = cfg.GENERAL.vis_step
     checkpoint_step: int = cfg.GENERAL.checkpoint_step
 
     # deviec
@@ -387,8 +394,18 @@ def train(
                     logger.info(fmt)
 
                 # 6. 可视化
-                if global_step % log_step == 0:
-                    pass
+                if global_step % vis_step == 0:
+                    logger.info("visualizing the result to aim.")
+
+                    img_vis_np = vis(batch, trans_2d_mat, output["result"], 0)
+                    img_vis_aim = Image(img_vis_np, caption="gt/pred proj")
+
+                    aim_run.track(
+                        img_vis_aim,
+                        name="projection",
+                        step=global_step,
+                        context={"subset": "train"},
+                    )
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="default_stage1")
