@@ -47,7 +47,8 @@
                 "MODEL.joint_type=\"3\"",
                 "MODEL.handec.denorm_output=false",
                 // "GENERAL.resume_path=checkpoint/10-01-2026/16-53-08_default_stage1-handec-large/checkpoints/checkpoint-72000",
-                "GENERAL.vis_step=10"
+                // "GENERAL.vis_step=10"
+                "TRAIN.backbone_lr=null"
             ],
             "justMyCode": true,
             "env": {

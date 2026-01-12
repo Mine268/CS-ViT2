@@ -58,6 +58,8 @@ class PoseNet(nn.Module):
         verts_loss_type: str,
         param_loss_type: str,
         supervise_global: bool,
+
+        freeze_backbone: bool,
     ):
         super(PoseNet, self).__init__()
         self.stage = stage
@@ -158,6 +160,9 @@ class PoseNet(nn.Module):
         self.supervise_global = supervise_global
         self.loss_fn = BundleLoss(1.0, 1.0, supervise_global)
         self.metric_meter = MetricMeter()
+
+        # train
+        self.freeze_backbone = freeze_backbone
 
     def decode_hand_param(
         self,
@@ -366,3 +371,12 @@ class PoseNet(nn.Module):
             self.persp_info_embedder.parameters(),
             self.handec.parameters(),
         )
+
+    @override
+    def train(self, mode=True):
+        super(PoseNet, self).train(mode)
+        self.backbone.train(mode and not self.freeze_backbone)
+
+    @override
+    def eval(self):
+        self.train(False)

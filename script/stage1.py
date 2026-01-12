@@ -128,6 +128,8 @@ def setup_model(cfg: DictConfig):
         verts_loss_type=cfg.LOSS.verts_loss_type,
         param_loss_type=cfg.LOSS.get("param_loss_type", "l1"),
         supervise_global=cfg.LOSS.get("supervise_global", True),
+
+        freeze_backbone=cfg.TRAIN.backbone_lr is None
     )
 
     return net
