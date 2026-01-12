@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 
 
 def compute_mpjpe_stats(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor = None):
@@ -79,3 +80,90 @@ def compute_mpvpe_stats(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor
         return batch_total_error, batch_total_count
     else:
         return torch.tensor(0.0, device=pred.device), torch.tensor(0.0, device=pred.device)
+
+
+def compute_rte_stats(pred, gt, mask):
+    """
+    pred, gt: [b,t,3]
+    mask: [b,t]
+    """
+    if pred is None or gt is None:
+        return torch.tensor(0.0), torch.tensor(0.0)
+
+    error_per = torch.norm(pred - gt, p=2, dim=-1) # [b,t]
+
+    if mask is None:
+        return error_per.sum(), error_per.numel()
+
+    mask_bool = mask > 0.5 # [B, T]
+
+    if mask_bool.any():
+        valid_errors = error_per[mask_bool]
+
+        batch_total_error = valid_errors.sum()
+        batch_total_count = valid_errors.numel()
+        return batch_total_error, batch_total_count
+    else:
+        return torch.tensor(0.0, device=pred.device), torch.tensor(0.0, device=pred.device)
+
+
+class MetricMeter(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    @torch.no_grad()
+    def forward(
+        self,
+        joint_rel_pred,
+        verts_rel_pred,
+        trans_pred,
+        verts_rel_gt,
+        batch,
+    ):
+        joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
+        joint_rel_gt = batch["joint_rel"]
+        joint_cam_gt = batch["joint_cam"]
+
+        verts_cam_pred = verts_rel_pred + trans_pred[:, :, None]
+        verts_cam_gt = verts_rel_gt + batch["joint_cam"][:, :, :1]
+
+        joint_valid = batch["joint_valid"]
+        mano_valid = batch["mano_valid"]
+
+        # cs-mpjpe
+        cs_mpjpe = compute_mpjpe_stats(
+            joint_cam_pred, joint_cam_gt, joint_valid
+        )
+        cs_mpjpe = cs_mpjpe[0] / cs_mpjpe[1]
+
+        # rs-mpjpe
+        rs_mpjpe = compute_mpjpe_stats(
+            joint_rel_pred, joint_rel_gt, joint_valid
+        )
+        rs_mpjpe = rs_mpjpe[0] / rs_mpjpe[1]
+
+        # cs-mpvpe
+        cs_mpvpe = compute_mpvpe_stats(
+            verts_cam_pred, verts_cam_gt, mano_valid
+        )
+        cs_mpvpe = cs_mpvpe[0] / cs_mpvpe[1]
+
+        # rs-mpvpe
+        rs_mpvpe = compute_mpvpe_stats(
+            verts_rel_pred, verts_rel_gt, mano_valid
+        )
+        rs_mpvpe = rs_mpvpe[0] / rs_mpvpe[1]
+
+        # cs-rte
+        rte = compute_rte_stats(
+            joint_cam_pred[:, :, 0], joint_cam_gt[:, :, 0], joint_valid[:, :, 0]
+        )
+        rte = rte[0] / rte[1]
+
+        return {
+            "micro_mpjpe": cs_mpjpe,
+            "micro_mpjpe_rel": rs_mpjpe,
+            "micro_mpvpe": cs_mpvpe,
+            "micro_mpvpe_rel": rs_mpvpe,
+            "micro_rte": rte,
+        }

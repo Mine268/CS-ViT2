@@ -157,9 +157,7 @@ class PoseNet(nn.Module):
         # Loss
         self.supervise_global = supervise_global
         self.loss_fn = BundleLoss(1.0, 1.0, supervise_global)
-        # self.kps3d_loss = Keypoint3DLoss(kps3d_loss_type, 1e-3)
-        # self.verts_loss = VertsLoss(verts_loss_type, 1e-3)
-        # self.param_loss = ParameterLoss(param_loss_type)
+        self.metric_meter = MetricMeter()
 
     def decode_hand_param(
         self,
@@ -324,6 +322,9 @@ class PoseNet(nn.Module):
         joint_rel_pred, verts_rel_pred = self.mano_to_pose(
             pose_pred, shape_pred # , trans_pred
         )
+        joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
+        verts_cam_pred = verts_rel_pred + trans_pred[:, :, None]
+        verts_cam_gt = verts_rel_gt + batch["joint_cam"][:, :, :1]
 
         # 3. loss
         loss, loss_state = self.loss_fn(
@@ -337,33 +338,20 @@ class PoseNet(nn.Module):
         )
 
         # 4. micro metric
-        with torch.no_grad():
-            micro_mpjpe = compute_mpjpe_stats(
-                joint_rel_pred, batch["joint_cam"], batch["joint_valid"]
-            )
-            micro_mpjpe = micro_mpjpe[0] / micro_mpjpe[1]
-
-            micro_mpjpe_rel = compute_mpjpe_stats(
-                joint_rel_pred - joint_rel_pred[:, :, :1],
-                batch["joint_cam"] - batch["joint_cam"][:, :, :1],
-                batch["joint_valid"]
-            )
-            micro_mpjpe_rel = micro_mpjpe_rel[0] / micro_mpjpe_rel[1]
-
-            verts_cam_gt = verts_rel_gt + batch["joint_cam"][:, :, :1]
-            micro_mpvpe = compute_mpvpe_stats(verts_rel_pred, verts_cam_gt, batch["mano_valid"])
-            micro_mpvpe = micro_mpvpe[0] / micro_mpvpe[1]
+        metric_state = self.metric_meter(
+            joint_rel_pred,
+            verts_rel_pred,
+            trans_pred,
+            verts_rel_gt,
+            batch
+        )
 
         loss_state = {
             "loss": loss,
-            "state": loss_state | {
-                "micro_mpjpe": micro_mpjpe.detach(),
-                "micro_mpjpe_rel": micro_mpjpe_rel.detach(),
-                "micro_mpvpe": micro_mpvpe.detach(),
-            },
+            "state": loss_state | metric_state,
             "result": {
-                "joint_cam_pred": joint_rel_pred.detach(),
-                "verts_cam_pred": verts_rel_pred.detach(),
+                "joint_cam_pred": joint_cam_pred.detach(),
+                "verts_cam_pred": verts_cam_pred.detach(),
                 "verts_cam_gt": verts_cam_gt.detach(),
             }
         }
