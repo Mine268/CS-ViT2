@@ -40,19 +40,20 @@
                 "--num_processes", "1",
                 "--num_machines", "1",
                 "--mixed_precision", "no",
+                "--main_process_port", "29504",
                 "-m", "script.stage1",
-                "--config-name", "default_stage1-handec-large",
+                "--config-name", "stage1-dino_large-frz.yaml",
                 "AIM.server_url=.",
                 "TRAIN.sample_per_device=16",
                 "MODEL.joint_type=\"3\"",
                 "MODEL.handec.denorm_output=false",
-                // "GENERAL.resume_path=checkpoint/10-01-2026/16-53-08_default_stage1-handec-large/checkpoints/checkpoint-72000",
-                // "GENERAL.vis_step=10"
+                "GENERAL.resume_path=checkpoint/12-01-2026/16-57-14_stage1-dino_large-frz.yaml/checkpoints/checkpoint-24000",
                 "TRAIN.backbone_lr=null"
             ],
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "3"
+                "CUDA_VISIBLE_DEVICES": "1",
+                "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
             }
         }
 

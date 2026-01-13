@@ -17,10 +17,10 @@ AIM:
 GENERAL:
   total_step: 100000
   log_step: 10
-  vis_step: 100
+  vis_step: 1000
   checkpoint_step: 3000
   warmup_step: 5000
-  cosine_cycle: 0.25
+  cosine_cycle: 0.4
   num_worker: 4
   prefetch_factor: 2
   seed: 3229084
@@ -28,7 +28,7 @@ GENERAL:
 
 TRAIN:
   lr: 1e-4
-  backbone_lr: null
+  backbone_lr: 1e-5
   grad_accum_step: 1
   max_grad: 1.0
   weight_decay: 1e-4

@@ -180,6 +180,8 @@ def val(
     net: nn.Module,
     val_loader: Iterable,
     limit_step: Optional[int] = None,
+    global_step: Optional[int] = None,
+    aim_run: Optional[Run] = None,
 ):
     """
     多卡验证函数。
@@ -202,7 +204,7 @@ def val(
         if limit_step is not None and ix >= limit_step:
             break
 
-        batch, _ = preprocess_batch(
+        batch, trans_2d_mat = preprocess_batch(
             batch_origin=batch_,
             patch_size=[cfg.MODEL.img_size, cfg.MODEL.img_size],
             patch_expanstion=cfg.TRAIN.expansion_ratio,
@@ -215,6 +217,22 @@ def val(
         )
 
         output = net(batch)
+
+        # 进行可视化
+        if (
+            accelerator.is_main_process
+            and aim_run is not None
+            and ix % cfg.GENERAL.vis_step == 0
+        ):
+            img_vis_np = vis(batch, trans_2d_mat, output["result"], 0)
+            img_vis_aim = Image(img_vis_np, caption="gt/pred proj")
+
+            aim_run.track(
+                img_vis_aim,
+                name="projection",
+                step=global_step,
+                context={"subset": "val"},
+            )
 
         # 获取预测值和真值
         joint_cam_pred = output["result"]["joint_cam_pred"] # [B, T, J, 3]
@@ -273,6 +291,10 @@ def val(
         final_results["mpvpe"] = total_v_err / total_v_cnt
     else:
         final_results["mpvpe"] = 0.0
+
+    if aim_run is not None and accelerator.is_main_process:
+        for k, v in final_results.items():
+            aim_run.track(v, name=k, step=global_step, context={"subset": "val"})
 
     net.train() # 恢复训练模式
     return final_results
@@ -353,13 +375,11 @@ def train(
                         net,
                         val_loader,
                         cfg.DATA.val.get("max_val_step", 1000),
+                        global_step,
+                        aim_run
                     )
                     logger.info(f"validation finished, mpjpe={val_result['mpjpe']}, "
                         f"mpvpe={val_result["mpvpe"]}")
-
-                    if aim_run is not None and accelerator.is_main_process:
-                        for k, v in val_result.items():
-                            aim_run.track(v, name=k, step=global_step, context={"subset": "val"})
 
                 # 5. 打印日志
                 if global_step % log_step == 0:
