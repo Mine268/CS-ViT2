@@ -208,44 +208,34 @@ class BundleLoss(nn.Module):
         shape_gt: torch.Tensor,
         trans_gt: torch.Tensor,
 
-        joint_cam_gt: torch.Tensor,
-        joint_cam_pred: torch.Tensor,
         joint_rel_gt: torch.Tensor,
         joint_rel_pred: torch.Tensor,
+        verts_rel_gt: torch.Tensor,
+        verts_rel_pred: torch.Tensor,
 
         mano_valid: torch.Tensor,
         joint_valid: torch.Tensor,
-
-        focal: torch.Tensor,
-        princpt: torch.Tensor,
     ):
         loss_theta = self.mse(pose_pred, pose_gt) # [b,t,d]
         loss_theta = torch.mean(loss_theta * mano_valid[..., None])
         loss_shape = self.mse(shape_pred, shape_gt) # [b,t,d]
         loss_shape = torch.mean(loss_shape * mano_valid[..., None])
 
+        loss_verts = self.l1(verts_rel_pred, verts_rel_gt) # [b,t,v,d]
+        loss_verts = torch.mean(loss_verts * mano_valid[..., None, None])
+
         if self.supervise_global:
             loss_joint_root = self.l1(trans_pred, trans_gt) # [b,t,d]
-            loss_joint_root = torch.mean(loss_joint_root * joint_valid[:, :, 0])
+            loss_joint_root = torch.mean(loss_joint_root * joint_valid[:, :, :1])
 
             loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt) # [b,t,j,d]
             loss_joint_rel = torch.mean(loss_joint_rel * joint_valid[..., None])
 
-            joint_proj_pred = self.proj_x3d(
-                joint_cam_pred, focal=focal, princpt=princpt
-            )
-            joint_proj_gt = self.proj_x3d(
-                joint_cam_gt, focal=focal, princpt=princpt
-            )
-            loss_proj = self.l1(joint_proj_pred, joint_proj_gt) # [b,t,j,d]
-            loss_proj = torch.mean(loss_proj * joint_valid[..., None])
-
-            loss_joint = self.glo * (loss_joint_root + loss_proj) + self.rel * loss_joint_rel
+            loss_joint = self.glo * loss_joint_root + self.rel * loss_joint_rel
 
             sub_state = {
                 "loss_joint_root": loss_joint_root.detach(),
                 "loss_joint_rel": loss_joint_rel.detach(),
-                "loss_proj": loss_proj.detach(),
             }
         else:
             loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt) # [b,t,j,d]
@@ -253,13 +243,14 @@ class BundleLoss(nn.Module):
 
             sub_state = {}
 
-        loss = loss_theta + loss_shape + loss_joint
+        loss = loss_theta + loss_shape + loss_verts + loss_joint
 
         return (
             loss,
             {
                 "loss_theta": loss_theta.detach(),
                 "loss_shape": loss_shape.detach(),
+                "loss_verts": loss_verts.detach(),
                 "loss_joint": loss_joint.detach(),
             }
             | sub_state,

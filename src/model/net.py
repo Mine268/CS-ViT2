@@ -323,17 +323,7 @@ class PoseNet(nn.Module):
             "(b t) j d -> b t j d", b=batch_size, j=njoint_hand
         )
 
-        if self.norm_by_hand:
-            norm_scale = rearrange(
-                self.get_hand_norm_scale(joints) * 1e3, "(b t) -> b t", b=batch_size
-            )
-            return (
-                joint_rel / norm_scale[:, None, None],
-                verts_rel / norm_scale[:, None, None],
-                norm_scale,
-            )
-        else:
-            return joint_rel, verts_rel, torch.ones_like(joint_rel[:, :, 0])
+        return joint_rel, verts_rel
 
     def forward(self, batch):
         # 1. forward
@@ -346,18 +336,20 @@ class PoseNet(nn.Module):
         )
 
         # 2. loss, fk
-        joint_rel_pred, verts_rel_pred, norm_scale_pred = self.mano_to_pose(
+        joint_rel_pred, verts_rel_pred = self.mano_to_pose(
             pose_pred, shape_pred
         )
+        norm_scale_pred = self.get_hand_norm_scale(joint_rel_pred)
         joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
         verts_cam_pred = verts_rel_pred + trans_pred[:, :, None]
 
         with torch.no_grad():
-            _, verts_rel_gt, norm_scale_gt = self.mano_to_pose(
+            _, verts_rel_gt = self.mano_to_pose(
                 batch["mano_pose"],
                 batch["mano_shape"],
             )
-        joint_cam_gt = batch["joint_cam"] / norm_scale_gt[..., None, None]
+        norm_scale_gt = self.get_hand_norm_scale(batch["joint_cam"])
+        joint_cam_gt = batch["joint_cam"]
         joint_rel_gt = joint_cam_gt - joint_cam_gt[:, :, :1]
         verts_cam_gt = verts_rel_gt + joint_cam_gt[:, :, :1]
 
@@ -367,25 +359,22 @@ class PoseNet(nn.Module):
             trans_pred,
             batch["mano_pose"],
             batch["mano_shape"],
-            joint_cam_gt[:, :, 0],
-            joint_cam_gt,
-            joint_cam_pred,
+            joint_cam_gt[:, :, 0] / norm_scale_gt[..., None],
+
             joint_rel_gt,
             joint_rel_pred,
+            verts_rel_gt,
+            verts_rel_pred,
+
             batch["mano_valid"],
             batch["joint_valid"],
-            batch["focal"],
-            batch["princpt"],
         )
 
-        joint_cam_gt = joint_cam_gt * norm_scale_gt[..., None, None]
-        joint_rel_gt = joint_rel_gt * norm_scale_gt[..., None, None]
-        verts_cam_gt = verts_cam_gt * norm_scale_gt[..., None, None]
-        verts_rel_gt = verts_rel_gt * norm_scale_gt[..., None, None]
-        joint_cam_pred = joint_cam_pred * norm_scale_gt[..., None, None]
-        joint_rel_pred = joint_rel_pred * norm_scale_gt[..., None, None]
-        verts_cam_pred = verts_cam_pred * norm_scale_gt[..., None, None]
-        verts_rel_pred = verts_rel_pred * norm_scale_gt[..., None, None]
+        norm_trans_factor = (norm_scale_gt / norm_scale_pred)[..., None, None]
+        joint_cam_pred = joint_cam_pred * norm_trans_factor
+        joint_rel_pred = joint_rel_pred * norm_trans_factor
+        verts_cam_pred = verts_cam_pred * norm_trans_factor
+        verts_rel_pred = verts_rel_pred * norm_trans_factor
 
         # 3. micro metric
         metric_state = self.metric_meter(
