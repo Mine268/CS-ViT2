@@ -180,7 +180,6 @@ class BundleLoss(nn.Module):
         rel: float,
         glo: float,
         supervise_global: bool,
-        norm_by_hand: bool,
     ):
         super().__init__()
         self.mse = nn.MSELoss(reduction="none")

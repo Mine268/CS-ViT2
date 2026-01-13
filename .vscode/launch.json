@@ -44,7 +44,7 @@
                 "-m", "script.stage1",
                 "--config-name", "stage1-dino_large-frz.yaml",
                 "AIM.server_url=.",
-                "TRAIN.sample_per_device=16",
+                "TRAIN.sample_per_device=32",
             ],
             "justMyCode": true,
             "env": {

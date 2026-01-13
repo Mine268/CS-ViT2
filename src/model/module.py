@@ -169,12 +169,24 @@ class PerspInfoEmbedderCrossAttn(nn.Module):
             emb_dropout_type="drop",
             norm="layer",
             norm_cond_dim=-1,
-            context_dim=2,
+            context_dim=2 + 2,
             skip_token_embedding=False
         )
 
         self.zero_linear = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         nn.init.zeros_(self.zero_linear.weight)
+
+        grid_edge = torch.linspace(
+            1 / self.num_sample * 0.5,
+            1 - 1 / self.num_sample * 0.5,
+            self.num_sample,
+        )  # [p]
+        grid_uv = torch.stack([
+            grid_edge[:, None].expand(-1, grid_edge.shape[0]),
+            grid_edge[None, :].expand(grid_edge.shape[0], -1),
+        ], dim=-1) # []
+        self.register_buffer("grid_edge", grid_edge)
+        self.register_buffer("grid_uv", grid_uv)
 
     def forward(
         self,
@@ -183,27 +195,28 @@ class PerspInfoEmbedderCrossAttn(nn.Module):
         focal: torch.Tensor,
         princpt: torch.Tensor
     ):
-        grid = torch.linspace(
-            1 / self.num_sample * 0.5,
-            1 - 1 / self.num_sample * 0.5,
-            self.num_sample,
-            device=bbox.device,
-        )  # [p]
         x_grid = (
-            bbox[:, 0:1] + (bbox[:, 2:3] - bbox[:, 0:1]) * grid[None, :]
+            bbox[:, 0:1] + (bbox[:, 2:3] - bbox[:, 0:1]) * self.grid_edge[None, :]
         )  # [b,p]
         y_grid = (
-            bbox[:, 1:2] + (bbox[:, 3:4] - bbox[:, 1:2]) * grid[None, :]
+            bbox[:, 1:2] + (bbox[:, 3:4] - bbox[:, 1:2]) * self.grid_edge[None, :]
         )  # [b,p]
-        grid = torch.stack([
-            x_grid[:, :, None].expand(-1, -1, grid.shape[0]),
-            y_grid[:, None, :].expand(-1, grid.shape[0], -1),
+        grid_xy = torch.stack([
+            x_grid[:, :, None].expand(-1, -1, self.grid_edge.shape[0]),
+            y_grid[:, None, :].expand(-1, self.grid_edge.shape[0], -1),
         ], dim=-1)# [b,p,p,2]
 
-        directions = (grid - princpt[:, None, None, :]) / focal[:, None, None, :]
+        directions = (grid_xy - princpt[:, None, None, :]) / focal[:, None, None, :]
         directions = torch.cat([directions, torch.ones_like(directions[..., :1])], dim=-1)
         directions = directions / torch.norm(directions, p="fro", dim=-1, keepdim=True)
         directions = directions[..., :2]  # [b,p,p,2] discard z value
+        directions = torch.cat(
+            [
+                directions,
+                self.grid_uv[None, ...].expand(directions.shape[0], -1, -1, -1),
+            ],
+            dim=-1,
+        )  # [b p q 4]
         directions = eps.rearrange(directions, "b p q d -> b (p q) d") # [b,n,d]
 
         out = self.net(feats, context=directions)
@@ -451,7 +464,7 @@ class SoftargmaxHead3D(nn.Module):
 
         self.decx = nn.Linear(dim, n_sample, bias=False)
         self.decy = nn.Linear(dim, n_sample, bias=False)
-        self.decz = nn.Linear(dim, n_sample * 2, bias=True)
+        self.decz = nn.Linear(dim, n_sample * 2, bias=False)
 
         self.register_buffer("x_centers", torch.linspace(x_range[0], x_range[1], n_sample))
         self.register_buffer("y_centers", torch.linspace(y_range[0], y_range[1], n_sample))
@@ -529,7 +542,7 @@ class MANOTransformerDecoderHead(nn.Module):
             norm_std = norm_stats["norm_std"]
             self.deccam = SoftargmaxHead3D(
                 dim,
-                192,
+                1024,
                 [norm_mean[0] - norm_std[0] * 5, norm_mean[0] + norm_std[0] * 5],
                 [norm_mean[1] - norm_std[1] * 5, norm_mean[1] + norm_std[1] * 5],
                 [norm_mean[2] - norm_std[2] * 5, norm_mean[2] + norm_std[2] * 5],
@@ -539,7 +552,7 @@ class MANOTransformerDecoderHead(nn.Module):
             std = norm_stats["std"]
             self.deccam = SoftargmaxHead3D(
                 dim,
-                192,
+                1024,
                 [mean[0] - std[0] * 5, mean[0] + std[0] * 5],
                 [mean[1] - std[1] * 5, mean[1] + std[1] * 5],
                 [mean[2] - std[2] * 5, mean[2] + std[2] * 5],
@@ -601,6 +614,7 @@ class MANOTransformerDecoderHead(nn.Module):
     def forward(self, x: torch.Tensor):
         batch_size = x.shape[0]
 
+        # [b,d]
         init_hand_pose = self.init_hand_pose.expand(batch_size, -1)
         init_betas = self.init_betas.expand(batch_size, -1)
         init_cam = self.init_cam.expand(batch_size, -1)

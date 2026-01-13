@@ -167,7 +167,7 @@ class PoseNet(nn.Module):
 
         # Loss
         self.supervise_global = supervise_global
-        self.loss_fn = BundleLoss(1.0, 1.0, supervise_global, norm_by_hand=norm_by_hand)
+        self.loss_fn = BundleLoss(1.0, 10.0, supervise_global)
         self.metric_meter = MetricMeter()
 
         # train
@@ -327,7 +327,7 @@ class PoseNet(nn.Module):
 
     def forward(self, batch):
         # 1. forward
-        pose_pred, shape_pred, trans_pred = self.predict_mano_param(
+        pose_pred, shape_pred, trans_norm_pred = self.predict_mano_param(
             img=batch["patches"],
             bbox=batch["patch_bbox"],
             focal=batch["focal"],
@@ -336,13 +336,6 @@ class PoseNet(nn.Module):
         )
 
         # 2. loss, fk
-        joint_rel_pred, verts_rel_pred = self.mano_to_pose(
-            pose_pred, shape_pred
-        )
-        norm_scale_pred = self.get_hand_norm_scale(joint_rel_pred)
-        joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
-        verts_cam_pred = verts_rel_pred + trans_pred[:, :, None]
-
         with torch.no_grad():
             _, verts_rel_gt = self.mano_to_pose(
                 batch["mano_pose"],
@@ -353,10 +346,18 @@ class PoseNet(nn.Module):
         joint_rel_gt = joint_cam_gt - joint_cam_gt[:, :, :1]
         verts_cam_gt = verts_rel_gt + joint_cam_gt[:, :, :1]
 
+        joint_rel_pred, verts_rel_pred = self.mano_to_pose(
+            pose_pred, shape_pred
+        )
+        norm_scale_pred = self.get_hand_norm_scale(joint_rel_pred) # [b,t]
+        trans_pred = trans_norm_pred * norm_scale_pred[:, :, None]
+        joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
+        verts_cam_pred = verts_rel_pred + trans_pred[:, :, None]
+
         loss, loss_state = self.loss_fn(
             pose_pred,
             shape_pred,
-            trans_pred,
+            trans_norm_pred,
             batch["mano_pose"],
             batch["mano_shape"],
             joint_cam_gt[:, :, 0] / norm_scale_gt[..., None],
