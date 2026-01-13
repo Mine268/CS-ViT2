@@ -542,20 +542,20 @@ class MANOTransformerDecoderHead(nn.Module):
             norm_std = norm_stats["norm_std"]
             self.deccam = SoftargmaxHead3D(
                 dim,
-                1024,
-                [norm_mean[0] - norm_std[0] * 5, norm_mean[0] + norm_std[0] * 5],
-                [norm_mean[1] - norm_std[1] * 5, norm_mean[1] + norm_std[1] * 5],
-                [norm_mean[2] - norm_std[2] * 5, norm_mean[2] + norm_std[2] * 5],
+                64,
+                [norm_mean[0] - norm_std[0] * 5, norm_mean[0] + norm_std[0] * 4],
+                [norm_mean[1] - norm_std[1] * 5, norm_mean[1] + norm_std[1] * 4],
+                [norm_mean[2] - norm_std[2] * 5, norm_mean[2] + norm_std[2] * 4],
             )
         else:
             mean = norm_stats["mean"]
             std = norm_stats["std"]
             self.deccam = SoftargmaxHead3D(
                 dim,
-                1024,
-                [mean[0] - std[0] * 5, mean[0] + std[0] * 5],
-                [mean[1] - std[1] * 5, mean[1] + std[1] * 5],
-                [mean[2] - std[2] * 5, mean[2] + std[2] * 5],
+                64,
+                [mean[0] - std[0] * 5, mean[0] + std[0] * 4],
+                [mean[1] - std[1] * 5, mean[1] + std[1] * 4],
+                [mean[2] - std[2] * 5, mean[2] + std[2] * 4],
             )
 
         self.npose = JOINT_DIM_DICT[joint_rep_type] * MANO_JOINT_COUNT
