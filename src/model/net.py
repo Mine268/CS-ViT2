@@ -173,14 +173,17 @@ class PoseNet(nn.Module):
         # train
         self.freeze_backbone = freeze_backbone
 
-    def get_hand_norm_scale(self, j3d: torch.Tensor):
+    def get_hand_norm_scale(self, j3d: torch.Tensor, valid: torch.Tensor):
         """
-        j3d: [...,j,3]
-        return: [...]
+        Args:
+            j3d: [...,j,3]
+            valid: [...,j]
+            return: [...], [...]
         """
         d = j3d[..., self.norm_idx[:-1], :] - j3d[..., self.norm_idx[1:], :]
         d = torch.sum(torch.sqrt(torch.sum(d ** 2, dim=-1)), dim=-1) # [...]
-        return d
+        flag = torch.all(valid[:, :, self.norm_idx] > 0.5, dim=-1).float()
+        return d, flag
 
     def decode_hand_param(
         self,
@@ -341,7 +344,9 @@ class PoseNet(nn.Module):
                 batch["mano_pose"],
                 batch["mano_shape"],
             )
-        norm_scale_gt = self.get_hand_norm_scale(batch["joint_cam"])
+        norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
+            batch["joint_cam"], batch["joint_valid"]
+        )
         joint_cam_gt = batch["joint_cam"]
         joint_rel_gt = joint_cam_gt - joint_cam_gt[:, :, :1]
         verts_cam_gt = verts_rel_gt + joint_cam_gt[:, :, :1]
@@ -349,7 +354,9 @@ class PoseNet(nn.Module):
         joint_rel_pred, verts_rel_pred = self.mano_to_pose(
             pose_pred, shape_pred
         )
-        norm_scale_pred = self.get_hand_norm_scale(joint_rel_pred) # [b,t]
+        norm_scale_pred, _ = self.get_hand_norm_scale(
+            joint_rel_pred, torch.ones_like(batch["joint_valid"])
+        )  # [b,t]
         trans_pred = trans_norm_pred * norm_scale_pred[:, :, None]
         joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
         verts_cam_pred = verts_rel_pred + trans_pred[:, :, None]
@@ -369,6 +376,7 @@ class PoseNet(nn.Module):
 
             batch["mano_valid"],
             batch["joint_valid"],
+            norm_valid_gt,
         )
 
         norm_trans_factor = (norm_scale_gt / norm_scale_pred)[..., None, None]
@@ -389,6 +397,7 @@ class PoseNet(nn.Module):
             verts_rel_pred,
             batch["mano_valid"],
             batch["joint_valid"],
+            norm_valid_gt,
         )
 
         loss_state = {

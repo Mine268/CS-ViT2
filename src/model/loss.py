@@ -214,6 +214,7 @@ class BundleLoss(nn.Module):
 
         mano_valid: torch.Tensor,
         joint_valid: torch.Tensor,
+        norm_valid: torch.Tensor,
     ):
         loss_theta = self.mse(pose_pred, pose_gt) # [b,t,d]
         loss_theta = torch.mean(loss_theta * mano_valid[..., None])
@@ -225,7 +226,9 @@ class BundleLoss(nn.Module):
 
         if self.supervise_global:
             loss_joint_root = self.l1(trans_pred, trans_gt) # [b,t,d]
-            loss_joint_root = torch.mean(loss_joint_root * joint_valid[:, :, :1])
+            loss_joint_root = torch.mean(
+                loss_joint_root * joint_valid[:, :, :1] * norm_valid[:, :, None]
+            )
 
             loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt) # [b,t,j,d]
             loss_joint_rel = torch.mean(loss_joint_rel * joint_valid[..., None])

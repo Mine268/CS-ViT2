@@ -124,10 +124,11 @@ class MetricMeter(nn.Module):
         verts_rel_pred,
         mano_valid,
         joint_valid,
+        norm_valid,
     ):
         # cs-mpjpe
         cs_mpjpe = compute_mpjpe_stats(
-            joint_cam_pred, joint_cam_gt, joint_valid
+            joint_cam_pred, joint_cam_gt, joint_valid * norm_valid[:, :, None]
         )
         cs_mpjpe = cs_mpjpe[0] / cs_mpjpe[1]
 
@@ -139,7 +140,7 @@ class MetricMeter(nn.Module):
 
         # cs-mpvpe
         cs_mpvpe = compute_mpvpe_stats(
-            verts_cam_pred, verts_cam_gt, mano_valid
+            verts_cam_pred, verts_cam_gt, mano_valid * norm_valid
         )
         cs_mpvpe = cs_mpvpe[0] / cs_mpvpe[1]
 
@@ -151,7 +152,7 @@ class MetricMeter(nn.Module):
 
         # cs-rte
         rte = compute_rte_stats(
-            joint_cam_pred[:, :, 0], joint_cam_gt[:, :, 0], joint_valid[:, :, 0]
+            joint_cam_pred[:, :, 0], joint_cam_gt[:, :, 0], joint_valid[:, :, 0] * norm_valid
         )
         rte = rte[0] / rte[1]
 
