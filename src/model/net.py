@@ -179,7 +179,7 @@ class PoseNet(nn.Module):
         return: [...]
         """
         d = j3d[..., self.norm_idx[:-1], :] - j3d[..., self.norm_idx[1:], :]
-        d = torch.sum(torch.sqrt(torch.sum(j3d ** 2, dim=-1)), dim=-1) # [...]
+        d = torch.sum(torch.sqrt(torch.sum(d ** 2, dim=-1)), dim=-1) # [...]
         return d
 
     def decode_hand_param(
@@ -346,7 +346,7 @@ class PoseNet(nn.Module):
         )
 
         # 2. loss, fk
-        joint_rel_pred, verts_rel_pred, _ = self.mano_to_pose(
+        joint_rel_pred, verts_rel_pred, norm_scale_pred = self.mano_to_pose(
             pose_pred, shape_pred
         )
         joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]

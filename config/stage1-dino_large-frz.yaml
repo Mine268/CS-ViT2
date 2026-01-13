@@ -17,7 +17,7 @@ AIM:
 GENERAL:
   total_step: 100000
   log_step: 10
-  vis_step: 1000
+  vis_step: 100
   checkpoint_step: 3000
   warmup_step: 5000
   cosine_cycle: 0.4
@@ -32,7 +32,7 @@ TRAIN:
   grad_accum_step: 1
   max_grad: 1.0
   weight_decay: 1e-4
-  sample_per_device: 38
+  sample_per_device: 32
   expansion_ratio: 2.0
   scale_z_range: [0.8, 1.2]
   scale_f_range: [0.8, 1.2]
