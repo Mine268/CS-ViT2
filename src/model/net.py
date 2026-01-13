@@ -1,3 +1,4 @@
+from typing import *
 import enum
 import itertools
 
@@ -60,6 +61,7 @@ class PoseNet(nn.Module):
         supervise_global: bool,
 
         freeze_backbone: bool,
+        norm_by_hand: bool,
     ):
         super(PoseNet, self).__init__()
         self.stage = stage
@@ -122,7 +124,14 @@ class PoseNet(nn.Module):
             skip_token_embedding=handec_skip_token_embed,
             use_mean_init=handec_mean_init,
             denorm_output=handec_denorm_output,
+            norm_by_hand=norm_by_hand
         )
+
+        self.norm_by_hand = norm_by_hand
+        if norm_by_hand:
+            norm_stats = np.load(NORM_STAT_NPZ)
+            norm_list = norm_stats["norm_list"].flatten().tolist()
+            self.norm_idx = [HAND_JOINTS_ORDER.index(x) for x in norm_list]
 
         # Temporal encoder
         # self.pose_temporal_encoder = TemporalEncoder(
@@ -158,11 +167,20 @@ class PoseNet(nn.Module):
 
         # Loss
         self.supervise_global = supervise_global
-        self.loss_fn = BundleLoss(1.0, 1.0, supervise_global)
+        self.loss_fn = BundleLoss(1.0, 1.0, supervise_global, norm_by_hand=norm_by_hand)
         self.metric_meter = MetricMeter()
 
         # train
         self.freeze_backbone = freeze_backbone
+
+    def get_hand_norm_scale(self, j3d: torch.Tensor):
+        """
+        j3d: [...,j,3]
+        return: [...]
+        """
+        d = j3d[..., self.norm_idx[:-1], :] - j3d[..., self.norm_idx[1:], :]
+        d = torch.sum(torch.sqrt(torch.sum(j3d ** 2, dim=-1)), dim=-1) # [...]
+        return d
 
     def decode_hand_param(
         self,
@@ -305,7 +323,17 @@ class PoseNet(nn.Module):
             "(b t) j d -> b t j d", b=batch_size, j=njoint_hand
         )
 
-        return joint_rel, verts_rel
+        if self.norm_by_hand:
+            norm_scale = rearrange(
+                self.get_hand_norm_scale(joints) * 1e3, "(b t) -> b t", b=batch_size
+            )
+            return (
+                joint_rel / norm_scale[:, None, None],
+                verts_rel / norm_scale[:, None, None],
+                norm_scale,
+            )
+        else:
+            return joint_rel, verts_rel, torch.ones_like(joint_rel[:, :, 0])
 
     def forward(self, batch):
         # 1. forward
@@ -317,38 +345,60 @@ class PoseNet(nn.Module):
             timestamp=batch["timestamp"]
         )
 
-        # 2. fk
-        with torch.no_grad():
-            _, verts_rel_gt = self.mano_to_pose(
-                batch["mano_pose"],
-                batch["mano_shape"],
-                # batch["joint_cam"][:, :, 0],
-            )
-        joint_rel_pred, verts_rel_pred = self.mano_to_pose(
-            pose_pred, shape_pred # , trans_pred
+        # 2. loss, fk
+        joint_rel_pred, verts_rel_pred, _ = self.mano_to_pose(
+            pose_pred, shape_pred
         )
         joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
         verts_cam_pred = verts_rel_pred + trans_pred[:, :, None]
-        verts_cam_gt = verts_rel_gt + batch["joint_cam"][:, :, :1]
 
-        # 3. loss
+        with torch.no_grad():
+            _, verts_rel_gt, norm_scale_gt = self.mano_to_pose(
+                batch["mano_pose"],
+                batch["mano_shape"],
+            )
+        joint_cam_gt = batch["joint_cam"] / norm_scale_gt[..., None, None]
+        joint_rel_gt = joint_cam_gt - joint_cam_gt[:, :, :1]
+        verts_cam_gt = verts_rel_gt + joint_cam_gt[:, :, :1]
+
         loss, loss_state = self.loss_fn(
             pose_pred,
             shape_pred,
             trans_pred,
+            batch["mano_pose"],
+            batch["mano_shape"],
+            joint_cam_gt[:, :, 0],
+            joint_cam_gt,
+            joint_cam_pred,
+            joint_rel_gt,
             joint_rel_pred,
-            verts_rel_pred,
-            verts_rel_gt,
-            batch,
+            batch["mano_valid"],
+            batch["joint_valid"],
+            batch["focal"],
+            batch["princpt"],
         )
 
-        # 4. micro metric
+        joint_cam_gt = joint_cam_gt * norm_scale_gt[..., None, None]
+        joint_rel_gt = joint_rel_gt * norm_scale_gt[..., None, None]
+        verts_cam_gt = verts_cam_gt * norm_scale_gt[..., None, None]
+        verts_rel_gt = verts_rel_gt * norm_scale_gt[..., None, None]
+        joint_cam_pred = joint_cam_pred * norm_scale_gt[..., None, None]
+        joint_rel_pred = joint_rel_pred * norm_scale_gt[..., None, None]
+        verts_cam_pred = verts_cam_pred * norm_scale_gt[..., None, None]
+        verts_rel_pred = verts_rel_pred * norm_scale_gt[..., None, None]
+
+        # 3. micro metric
         metric_state = self.metric_meter(
-            joint_rel_pred,
-            verts_rel_pred,
-            trans_pred,
+            joint_cam_gt,
+            joint_rel_gt,
+            verts_cam_gt,
             verts_rel_gt,
-            batch
+            joint_cam_pred,
+            joint_rel_pred,
+            verts_cam_pred,
+            verts_rel_pred,
+            batch["mano_valid"],
+            batch["joint_valid"],
         )
 
         loss_state = {

@@ -45,10 +45,6 @@
                 "--config-name", "stage1-dino_large-frz.yaml",
                 "AIM.server_url=.",
                 "TRAIN.sample_per_device=16",
-                "MODEL.joint_type=\"3\"",
-                "MODEL.handec.denorm_output=false",
-                "GENERAL.resume_path=checkpoint/12-01-2026/16-57-14_stage1-dino_large-frz.yaml/checkpoints/checkpoint-24000",
-                "TRAIN.backbone_lr=null"
             ],
             "justMyCode": true,
             "env": {

@@ -129,7 +129,8 @@ def setup_model(cfg: DictConfig):
         param_loss_type=cfg.LOSS.get("param_loss_type", "l1"),
         supervise_global=cfg.LOSS.get("supervise_global", True),
 
-        freeze_backbone=cfg.TRAIN.backbone_lr is None
+        freeze_backbone=cfg.TRAIN.backbone_lr is None,
+        norm_by_hand=cfg.MODEL.get("norm_by_hand", False),
     )
 
     return net

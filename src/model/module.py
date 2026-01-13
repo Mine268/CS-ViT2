@@ -493,6 +493,7 @@ class MANOTransformerDecoderHead(nn.Module):
         skip_token_embedding: bool = False,
         use_mean_init: bool = True,
         denorm_output: bool = False,
+        norm_by_hand: bool = False,
     ):
         super().__init__()
         assert joint_rep_type in JOINT_DIM_DICT
@@ -520,13 +521,29 @@ class MANOTransformerDecoderHead(nn.Module):
 
         self.decpose = nn.Linear(dim, npose)
         self.decshape = nn.Linear(dim, MANO_SHAPE_DIM)
-        self.deccam = SoftargmaxHead3D(
-            dim,
-            192,
-            [-1000., 1000.],
-            [-1000., 1000.],
-            [0., 2000.],
-        )
+
+        self.norm_by_hand = norm_by_hand
+        norm_stats = np.load(NORM_STAT_NPZ)
+        if norm_by_hand:
+            norm_mean = norm_stats["norm_mean"]
+            norm_std = norm_stats["norm_std"]
+            self.deccam = SoftargmaxHead3D(
+                dim,
+                192,
+                [norm_mean[0] - norm_std[0] * 5, norm_mean[0] + norm_std[0] * 5],
+                [norm_mean[1] - norm_std[1] * 5, norm_mean[1] + norm_std[1] * 5],
+                [norm_mean[2] - norm_std[2] * 5, norm_mean[2] + norm_std[2] * 5],
+            )
+        else:
+            mean = norm_stats["mean"]
+            std = norm_stats["std"]
+            self.deccam = SoftargmaxHead3D(
+                dim,
+                192,
+                [mean[0] - std[0] * 5, mean[0] + std[0] * 5],
+                [mean[1] - std[1] * 5, mean[1] + std[1] * 5],
+                [mean[2] - std[2] * 5, mean[2] + std[2] * 5],
+            )
 
         self.npose = JOINT_DIM_DICT[joint_rep_type] * MANO_JOINT_COUNT
         if use_mean_init:

@@ -2,6 +2,30 @@ JOINT_DIM_DICT = {"6d": 6, "3": 3, "quat": 4}
 
 HAND_JOINT_COUNT = 21
 
+HAND_JOINTS_ORDER = (
+    "Wrist",
+    "Thumb_1",
+    "Thumb_2",
+    "Thumb_3",
+    "Thumb_4",
+    "Index_1",
+    "Index_2",
+    "Index_3",
+    "Index_4",
+    "Middle_1",
+    "Middle_2",
+    "Middle_3",
+    "Middle_4",
+    "Ring_1",
+    "Ring_2",
+    "Ring_3",
+    "Ring_4",
+    "Pinky_1",
+    "Pinky_2",
+    "Pinky_3",
+    "Pinky_4",
+)
+
 MANO_SHAPE_DIM = 10
 MANO_JOINT_COUNT = 16
 MANO_J_REGRESSOR_PATH = "model/smplx_models/mano/sh_joint_regressor.npy"
@@ -9,6 +33,26 @@ MANO_ROOT = "model/smplx_models"
 MANO_MEAN_NPZ= "model/smplx_models/mano/mano_mean_params.npz"
 MANO_MEAN_NPOSE = 6 * 16
 MANO_STAT_NPZ = "model/smplx_models/mano/mano_stats.npz"
+NORM_STAT_NPZ = "model/smplx_models/mano/norm_stats.npz"
+
+MANO_JOINTS_ORDER = (
+    "Wrist",
+    "Index_1",
+    "Index_2",
+    "Index_3",
+    "Middle_1",
+    "Middle_2",
+    "Middle_3",
+    "Pinky_1",
+    "Pinky_2",
+    "Pinky_3",
+    "Ring_1",
+    "Ring_2",
+    "Ring_3",
+    "Thumb_1",
+    "Thumb_2",
+    "Thumb_3",
+)
 
 MANO_JOINTS_CONNECTION = [
     (0, 1),   # Wrist -> Thumb_1

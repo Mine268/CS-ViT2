@@ -61,6 +61,7 @@ MODEL:
   stage: stage1
   num_frame: 1
   joint_type: "3"
+  norm_by_hand: true
   backbone:
     backbone_str: model/facebook/dinov2-large
     infusion_layer: null

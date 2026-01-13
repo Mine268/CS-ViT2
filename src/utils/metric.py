@@ -114,22 +114,17 @@ class MetricMeter(nn.Module):
     @torch.no_grad()
     def forward(
         self,
-        joint_rel_pred,
-        verts_rel_pred,
-        trans_pred,
+        joint_cam_gt,
+        joint_rel_gt,
+        verts_cam_gt,
         verts_rel_gt,
-        batch,
+        joint_cam_pred,
+        joint_rel_pred,
+        verts_cam_pred,
+        verts_rel_pred,
+        mano_valid,
+        joint_valid,
     ):
-        joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
-        joint_rel_gt = batch["joint_rel"]
-        joint_cam_gt = batch["joint_cam"]
-
-        verts_cam_pred = verts_rel_pred + trans_pred[:, :, None]
-        verts_cam_gt = verts_rel_gt + batch["joint_cam"][:, :, :1]
-
-        joint_valid = batch["joint_valid"]
-        mano_valid = batch["mano_valid"]
-
         # cs-mpjpe
         cs_mpjpe = compute_mpjpe_stats(
             joint_cam_pred, joint_cam_gt, joint_valid
