@@ -22,6 +22,7 @@ from src.data.dataloader import get_dataloader
 from src.data.preprocess import preprocess_batch
 from src.model.net import PoseNet
 from src.utils.vis import vis
+from src.utils.metric import *
 
 
 logger = get_logger(__name__)
@@ -190,11 +191,9 @@ def val(
     """
     net.eval()
     device = accelerator.device
+    norm_idx: List[int] = net.get_norm_idx()
 
-    # 1. 初始化累计器 (Total Error, Total Count)
-    # 使用 float64 防止溢出，虽然 float32 通常也够
-    metrics_accum = torch.zeros(4, device=device, dtype=torch.float64)
-    # indices: [0]=joint_err_sum, [1]=joint_count, [2]=verts_err_sum, [3]=verts_count
+    metric_meter = StreamingMetricMeter()
 
     # 如果想要显示进度条 (仅主进程)
     # iter_wrapper = tqdm(val_loader, desc="Val") if accelerator.is_main_process else val_loader
@@ -219,11 +218,40 @@ def val(
 
         output = net(batch)
 
+        joint_cam_gt = batch["joint_cam"]
+        joint_rel_gt = joint_cam_gt - joint_cam_gt[:, :, :1]
+        verts_cam_gt = output["result"]["verts_cam_gt"]
+        verts_rel_gt = verts_cam_gt - joint_cam_gt[:, :, :1]
+
+        joint_cam_pred = output["result"]["joint_cam_pred"]
+        joint_rel_pred = joint_cam_pred - joint_cam_pred[:, :, :1]
+        verts_cam_pred = output["result"]["verts_cam_pred"]
+        verts_rel_pred = verts_cam_pred - joint_cam_pred[:, :, :1]
+
+        joint_valid = batch["joint_valid"]
+        mano_valid = batch["mano_valid"]
+        norm_valid = torch.all(batch["joint_valid"][:, :, norm_idx] > 0.5, dim=-1).float()
+
+        # 计算指标
+        metric_meter.update(
+            joint_cam_gt,
+            joint_rel_gt,
+            verts_cam_gt,
+            verts_rel_gt,
+            joint_cam_pred,
+            joint_rel_pred,
+            verts_cam_pred,
+            verts_rel_pred,
+            mano_valid,
+            joint_valid,
+            norm_valid,
+        )
+
         # 进行可视化
         if (
             accelerator.is_main_process
             and aim_run is not None
-            and ix % cfg.GENERAL.vis_step == 0
+            and ix % max(100, cfg.GENERAL.vis_step // 10) == 0
         ):
             img_vis_np = vis(batch, trans_2d_mat, output["result"], 0)
             img_vis_aim = Image(img_vis_np, caption="gt/pred proj")
@@ -235,69 +263,58 @@ def val(
                 context={"subset": "val"},
             )
 
-        # 获取预测值和真值
-        joint_cam_pred = output["result"]["joint_cam_pred"] # [B, T, J, 3]
-        verts_cam_pred = output["result"]["verts_cam_pred"] # [B, T, V, 3]
-
-        joint_cam_gt = batch["joint_cam"]
-        verts_cam_gt = output["result"]["verts_cam_gt"]
-
-        # Mask: joint_valid [B, T, J], mano_valid [B, T]
-        joint_valid = batch["joint_valid"]
-        mano_valid = batch["mano_valid"]
-
-        # --- A. 计算 MPJPE (Mean Per Joint Position Error) ---
-        # error per joint: [B, T, J]
-        joint_error = torch.sqrt(torch.sum((joint_cam_pred - joint_cam_gt) ** 2, dim=-1))
-
-        # 应用 Mask
-        mask_j = joint_valid > 0.5
-        if mask_j.any():
-            metrics_accum[0] += joint_error[mask_j].sum()
-            metrics_accum[1] += mask_j.sum()
-
-        # --- B. 计算 MPVPE (Mean Per Vertex Position Error) ---
-        # error per vertex: [B, T, V]
-        if verts_cam_pred is not None and verts_cam_gt is not None:
-            verts_error = torch.sqrt(torch.sum((verts_cam_pred - verts_cam_gt) ** 2, dim=-1))
-
-            # mano_valid 通常是整手有效性 [B, T]，需要扩展到 [B, T, V] 或者直接索引
-            # 这里简单处理：找出有效的 (b,t) 索引，对这些帧的所有点求和
-            mask_v = mano_valid > 0.5 # [B, T]
-            if mask_v.any():
-                # verts_error[mask_v] 得到 [N_valid_frames, V]
-                metrics_accum[2] += verts_error[mask_v].sum()
-                metrics_accum[3] += verts_error[mask_v].numel()
-
     # ==========================================
-    # 3. 关键同步代码：Reduce
+    # 3. 关键同步代码：Pack -> Reduce -> Unpack
     # ==========================================
-    # 将所有 GPU 的累加值相加
-    # reduction="sum" 表示所有进程的值加在一起，结果广播回所有进程
-    metrics_sum = accelerator.reduce(metrics_accum, reduction="sum")
 
-    # 4. 计算最终平均值 (转回 mm)
+    # 定义需要同步的指标键值顺序 (必须固定顺序)
+    keys_order = ["cs_mpjpe", "rs_mpjpe", "cs_mpvpe", "rs_mpvpe", "rte"]
+    # 映射到输出的名称
+    output_mapping = {
+        "cs_mpjpe": "micro_mpjpe",
+        "rs_mpjpe": "micro_mpjpe_rel",
+        "cs_mpvpe": "micro_mpvpe",
+        "rs_mpvpe": "micro_mpvpe_rel",
+        "rte": "micro_rte",
+    }
+
+    # Step A: Pack (打包)
+    # 从 Python 对象转为 Tensor，以便在 GPU 间传输
+    # 5个指标 * 2个值(error, count) = 10个 float64
+    local_stats = torch.zeros(len(keys_order) * 2, device=device, dtype=torch.float64)
+
+    for i, key in enumerate(keys_order):
+        # 从 metric_meter 取出累加好的 [error_sum, count_sum]
+        err_sum, count_sum = metric_meter.accumulators[key]
+        local_stats[2 * i] = err_sum
+        local_stats[2 * i + 1] = count_sum
+
+    # Step B: Reduce (归约)
+    # 将所有 GPU 的 local_stats 相加
+    global_stats = accelerator.reduce(local_stats, reduction="sum")
+
+    # Step C: Unpack & Compute (解包并计算平均值)
     final_results = {}
 
-    # MPJPE
-    total_j_err, total_j_cnt = metrics_sum[0].item(), metrics_sum[1].item()
-    if total_j_cnt > 0:
-        final_results["mpjpe"] = total_j_err / total_j_cnt
-    else:
-        final_results["mpjpe"] = 0.0
+    # 只需要在主进程或者所有进程都需要结果时计算
+    # 这里让所有进程都计算一下，开销很小，且方便打印日志
+    for i, key in enumerate(keys_order):
+        total_err = global_stats[2 * i].item()
+        total_cnt = global_stats[2 * i + 1].item()
 
-    # MPVPE
-    total_v_err, total_v_cnt = metrics_sum[2].item(), metrics_sum[3].item()
-    if total_v_cnt > 0:
-        final_results["mpvpe"] = total_v_err / total_v_cnt
-    else:
-        final_results["mpvpe"] = 0.0
+        out_name = output_mapping[key]
 
+        if total_cnt > 0:
+            final_results[out_name] = total_err / total_cnt
+        else:
+            final_results[out_name] = 0.0
+
+    # 4. 记录到 Aim (仅主进程)
     if aim_run is not None and accelerator.is_main_process:
         for k, v in final_results.items():
             aim_run.track(v, name=k, step=global_step, context={"subset": "val"})
 
-    net.train() # 恢复训练模式
+    net.train()
     return final_results
 
 

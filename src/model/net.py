@@ -421,6 +421,9 @@ class PoseNet(nn.Module):
             self.handec.parameters(),
         )
 
+    def get_norm_idx(self):
+        return self.norm_idx
+
     @override
     def train(self, mode=True):
         super(PoseNet, self).train(mode)

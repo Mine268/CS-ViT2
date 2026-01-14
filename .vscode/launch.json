@@ -34,21 +34,17 @@
             "name": "stage1",
             "type": "debugpy",
             "request": "launch",
-            "module": "accelerate.commands.launch",
+            "module": "script.stage1",
             "console": "integratedTerminal",
             "args": [
-                "--num_processes", "1",
-                "--num_machines", "1",
-                "--mixed_precision", "no",
-                "--main_process_port", "29504",
-                "-m", "script.stage1",
                 "--config-name", "stage1-dino_large-frz.yaml",
                 "AIM.server_url=.",
                 "TRAIN.sample_per_device=32",
+                "GENERAL.resume_path=checkpoint/13-01-2026/18-22-11_stage1-dino_large-frz.yaml/checkpoints/checkpoint-27000"
             ],
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "1",
+                "CUDA_VISIBLE_DEVICES": "0",
                 "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
             }
         }

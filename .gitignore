@@ -234,3 +234,5 @@ __marimo__/
 model/
 !src/model/
 checkpoint/
+*.pkl
+*.ipynb
