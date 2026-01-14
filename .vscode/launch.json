@@ -37,8 +37,9 @@
             "module": "script.stage1",
             "console": "integratedTerminal",
             "args": [
-                "--config-name", "stage1-dino_large-frz.yaml",
+                "--config-name", "stage1-dino_large",
                 "AIM.server_url=.",
+                "GENERAL.description='debug run'",
                 "TRAIN.sample_per_device=32",
                 // "GENERAL.resume_path=checkpoint/13-01-2026/18-22-11_stage1-dino_large-frz.yaml/checkpoints/checkpoint-27000"
             ],

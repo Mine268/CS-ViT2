@@ -15,6 +15,7 @@ AIM:
   server_url: aim://10.208.33.93:53800
 
 GENERAL:
+  description: ""
   total_step: 100000
   log_step: 10
   vis_step: 100
