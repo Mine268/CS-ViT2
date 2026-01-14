@@ -11,6 +11,7 @@ from .loss import *
 from .module import *
 from .hamer_module import *
 from ..utils.metric import *
+from ..utils.proj import *
 
 
 class PoseNet(nn.Module):
@@ -55,9 +56,6 @@ class PoseNet(nn.Module):
 
         joint_rep_type: str,
 
-        kps3d_loss_type: str,
-        verts_loss_type: str,
-        param_loss_type: str,
         supervise_global: bool,
 
         freeze_backbone: bool,
@@ -167,7 +165,7 @@ class PoseNet(nn.Module):
 
         # Loss
         self.supervise_global = supervise_global
-        self.loss_fn = BundleLoss(1.0, 10.0, supervise_global)
+        self.loss_fn = BundleLoss(rel=1.0, glo=10.0, proj=0.1, supervise_global=supervise_global)
         self.metric_meter = MetricMeter()
 
         # train
@@ -357,9 +355,13 @@ class PoseNet(nn.Module):
         norm_scale_pred, _ = self.get_hand_norm_scale(
             joint_rel_pred, torch.ones_like(batch["joint_valid"])
         )  # [b,t]
+        norm_scale_pred = norm_scale_pred.detach()
         trans_pred = trans_norm_pred * norm_scale_pred[:, :, None]
         joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
         verts_cam_pred = verts_rel_pred + trans_pred[:, :, None]
+
+        joint_img_gt = proj_points_3d(joint_cam_gt, batch["focal"], batch["princpt"])
+        joint_img_pred = proj_points_3d(joint_cam_pred, batch["focal"], batch["princpt"])
 
         loss, loss_state = self.loss_fn(
             pose_pred,
@@ -373,6 +375,9 @@ class PoseNet(nn.Module):
             joint_rel_pred,
             verts_rel_gt,
             verts_rel_pred,
+
+            joint_img_gt,
+            joint_img_pred,
 
             batch["mano_valid"],
             batch["joint_valid"],

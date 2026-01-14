@@ -90,8 +90,4 @@ MODEL:
     zero_linear: true
 
 LOSS:
-  kps3d_loss_type: "l1"
-  verts_loss_type: "l1"
-  param_loss_type: "l1"
-
   supervise_global: true

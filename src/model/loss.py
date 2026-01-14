@@ -179,24 +179,15 @@ class BundleLoss(nn.Module):
         self,
         rel: float,
         glo: float,
+        proj: float,
         supervise_global: bool,
     ):
         super().__init__()
         self.mse = nn.MSELoss(reduction="none")
         self.l1 = nn.L1Loss(reduction="none")
 
-        self.rel, self.glo = rel, glo
+        self.rel, self.glo, self.proj = rel, glo, proj
         self.supervise_global = supervise_global
-
-    def proj_x3d(self, x3d: torch.Tensor, focal: torch.Tensor, princpt: torch.Tensor):
-        """
-        x3d: [b,t,j,d]
-        focal, princpt: [b,t,2]
-        return: [b,t,j,2]
-        """
-        u = x3d[:, :, :, 0] * focal[:, :, :1] / x3d[:, :, :, 2] + princpt[:, :, :1]
-        v = x3d[:, :, :, 1] * focal[:, :, 1:] / x3d[:, :, :, 2] + princpt[:, :, 1:]
-        return torch.cat([u, v], dim=-1)
 
     def forward(
         self,
@@ -211,6 +202,9 @@ class BundleLoss(nn.Module):
         joint_rel_pred: torch.Tensor,
         verts_rel_gt: torch.Tensor,
         verts_rel_pred: torch.Tensor,
+
+        joint_img_gt: torch.Tensor,
+        joint_img_pred: torch.Tensor,
 
         mano_valid: torch.Tensor,
         joint_valid: torch.Tensor,
@@ -233,11 +227,21 @@ class BundleLoss(nn.Module):
             loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt) # [b,t,j,d]
             loss_joint_rel = torch.mean(loss_joint_rel * joint_valid[..., None])
 
-            loss_joint = self.glo * loss_joint_root + self.rel * loss_joint_rel
+            loss_joint_img = self.l1(joint_img_pred, joint_img_gt) # [b,t,j,2]
+            loss_joint_img = torch.mean(
+                loss_joint_img * joint_valid[..., None] * norm_valid[..., None, None]
+            )
+
+            loss_joint = (
+                self.glo * loss_joint_root
+                + self.proj * loss_joint_img
+                + self.rel * loss_joint_rel
+            )
 
             sub_state = {
                 "loss_joint_root": loss_joint_root.detach(),
                 "loss_joint_rel": loss_joint_rel.detach(),
+                "loss_joint_img": loss_joint_img.detach(),
             }
         else:
             loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt) # [b,t,j,d]

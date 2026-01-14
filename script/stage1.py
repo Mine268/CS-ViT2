@@ -125,9 +125,6 @@ def setup_model(cfg: DictConfig):
 
         joint_rep_type=cfg.MODEL.joint_type,
 
-        kps3d_loss_type=cfg.LOSS.kps3d_loss_type,
-        verts_loss_type=cfg.LOSS.verts_loss_type,
-        param_loss_type=cfg.LOSS.get("param_loss_type", "l1"),
         supervise_global=cfg.LOSS.get("supervise_global", True),
 
         freeze_backbone=cfg.TRAIN.backbone_lr is None,
@@ -396,8 +393,9 @@ def train(
                         global_step,
                         aim_run
                     )
-                    logger.info(f"validation finished, mpjpe={val_result['mpjpe']}, "
-                        f"mpvpe={val_result["mpvpe"]}")
+                    logger.info(f"validation finished.")
+                    for k, v in val_result.items():
+                        logger.info(f"{k}={v}")
 
                 # 5. 打印日志
                 if global_step % log_step == 0:
