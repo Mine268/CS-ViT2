@@ -407,6 +407,7 @@ class PoseNet(nn.Module):
                 "joint_cam_pred": joint_cam_pred.detach(),
                 "verts_cam_pred": verts_cam_pred.detach(),
                 "verts_cam_gt": verts_cam_gt.detach(),
+                "norm_idx": self.norm_idx
             }
         }
 

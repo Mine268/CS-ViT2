@@ -191,7 +191,6 @@ def val(
     """
     net.eval()
     device = accelerator.device
-    norm_idx: List[int] = net.get_norm_idx()
 
     metric_meter = StreamingMetricMeter()
 
@@ -230,6 +229,7 @@ def val(
 
         joint_valid = batch["joint_valid"]
         mano_valid = batch["mano_valid"]
+        norm_idx = output["result"]["norm_idx"]
         norm_valid = torch.all(batch["joint_valid"][:, :, norm_idx] > 0.5, dim=-1).float()
 
         # 计算指标
