@@ -422,7 +422,7 @@ class PoseNet(nn.Module):
                 "verts_cam_pred": verts_cam_pred.detach(),
                 "verts_cam_gt": verts_cam_gt.detach(),
             }
-            | {"norm_idx": self.norm_idx} if self.norm_by_hand else {},
+            | ({"norm_idx": self.norm_idx} if self.norm_by_hand else {}),
         }
 
         return loss_state
