@@ -126,6 +126,9 @@ def setup_model(cfg: DictConfig):
         joint_rep_type=cfg.MODEL.joint_type,
 
         supervise_global=cfg.LOSS.get("supervise_global", True),
+        loss_rel_scale=cfg.LOSS.get("rel", 1.0),
+        loss_glo_scale=cfg.LOSS.get("glo", 10.),
+        loss_proj_scale=cfg.LOSS.get("proj", 0.1),
 
         freeze_backbone=cfg.TRAIN.backbone_lr is None,
         norm_by_hand=cfg.MODEL.get("norm_by_hand", False),

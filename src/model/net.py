@@ -57,6 +57,9 @@ class PoseNet(nn.Module):
         joint_rep_type: str,
 
         supervise_global: bool,
+        loss_rel_scale: float,
+        loss_glo_scale: float,
+        loss_proj_scale: float,
 
         freeze_backbone: bool,
         norm_by_hand: bool,
@@ -165,7 +168,12 @@ class PoseNet(nn.Module):
 
         # Loss
         self.supervise_global = supervise_global
-        self.loss_fn = BundleLoss(rel=1.0, glo=10.0, proj=0.1, supervise_global=supervise_global)
+        self.loss_fn = BundleLoss(
+            rel=loss_rel_scale,
+            glo=loss_glo_scale,
+            proj=loss_proj_scale,
+            supervise_global=supervise_global,
+        )
         self.metric_meter = MetricMeter()
 
         # train
