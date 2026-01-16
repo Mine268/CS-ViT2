@@ -229,8 +229,11 @@ def val(
 
         joint_valid = batch["joint_valid"]
         mano_valid = batch["mano_valid"]
-        norm_idx = output["result"]["norm_idx"]
-        norm_valid = torch.all(batch["joint_valid"][:, :, norm_idx] > 0.5, dim=-1).float()
+        if "norm_idx" in output["result"]:
+            norm_idx = output["result"]["norm_idx"]
+            norm_valid = torch.all(batch["joint_valid"][:, :, norm_idx] > 0.5, dim=-1).float()
+        else:
+            norm_valid = torch.ones(joint_valid.shape[:2])
 
         # 计算指标
         metric_meter.update(
