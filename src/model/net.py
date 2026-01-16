@@ -342,9 +342,14 @@ class PoseNet(nn.Module):
                 batch["mano_pose"],
                 batch["mano_shape"],
             )
-        norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
-            batch["joint_cam"], batch["joint_valid"]
-        )
+        if self.norm_by_hand:
+            norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
+                batch["joint_cam"], batch["joint_valid"]
+            )
+        else:
+            norm_scale_gt = torch.ones(batch["joint_cam"].shape[:2], device=pose_pred.device)
+            norm_valid_gt = torch.ones_like(norm_scale_gt)
+
         joint_cam_gt = batch["joint_cam"]
         joint_rel_gt = joint_cam_gt - joint_cam_gt[:, :, :1]
         verts_cam_gt = verts_rel_gt + joint_cam_gt[:, :, :1]
@@ -352,9 +357,13 @@ class PoseNet(nn.Module):
         joint_rel_pred, verts_rel_pred = self.mano_to_pose(
             pose_pred, shape_pred
         )
-        norm_scale_pred, _ = self.get_hand_norm_scale(
-            joint_rel_pred, torch.ones_like(batch["joint_valid"])
-        )  # [b,t]
+        if self.norm_by_hand:
+            norm_scale_pred, _ = self.get_hand_norm_scale(
+                joint_rel_pred, torch.ones_like(batch["joint_valid"])
+            )  # [b,t]
+        else:
+            norm_scale_pred = torch.ones(batch["joint_cam"].shape[:2], device=pose_pred.device)
+
         norm_scale_pred = norm_scale_pred.detach()
         trans_pred = trans_norm_pred * norm_scale_pred[:, :, None]
         joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
@@ -412,8 +421,8 @@ class PoseNet(nn.Module):
                 "joint_cam_pred": joint_cam_pred.detach(),
                 "verts_cam_pred": verts_cam_pred.detach(),
                 "verts_cam_gt": verts_cam_gt.detach(),
-                "norm_idx": self.norm_idx
             }
+            | {"norm_idx": self.norm_idx} if self.norm_by_hand else {},
         }
 
         return loss_state

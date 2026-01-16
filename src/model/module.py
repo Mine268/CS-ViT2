@@ -537,6 +537,7 @@ class MANOTransformerDecoderHead(nn.Module):
 
         self.norm_by_hand = norm_by_hand
         norm_stats = np.load(NORM_STAT_NPZ)
+        # TODO: resolution and 5->4
         if norm_by_hand:
             norm_mean = norm_stats["norm_mean"]
             norm_std = norm_stats["norm_std"]
