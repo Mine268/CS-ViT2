@@ -3,6 +3,9 @@ from typing import *
 import torch
 import torch.nn as nn
 
+from ..utils.mano import *
+from ..utils.proj import *
+
 
 def robust_masked_mean(loss: torch.Tensor, mask: torch.Tensor):
     """
@@ -27,6 +30,7 @@ def robust_masked_mean(loss: torch.Tensor, mask: torch.Tensor):
     else:
         # 如果没有有效样本，返回 0，同时保留梯度图（乘以 0.0）
         return total_loss * 0.0
+
 
 class Keypoint3DLoss(nn.Module):
     def __init__(self, loss_type: str = 'l1', scale: float = 1.0):
@@ -59,6 +63,7 @@ class Keypoint3DLoss(nn.Module):
         # 3. 计算安全的全局平均
         return robust_masked_mean(raw_loss, valid)
 
+
 class Axis3DLoss(nn.Module):
     def __init__(self, loss_type: str = 'l1'):
         """
@@ -86,6 +91,7 @@ class Axis3DLoss(nn.Module):
 
         # 3. 计算安全的全局平均
         return robust_masked_mean(raw_loss, valid_mask)
+
 
 class VertsLoss(nn.Module):
     def __init__(self, loss_type: str = 'l1', scale: float = 1.0):
@@ -119,6 +125,7 @@ class VertsLoss(nn.Module):
 
         # 3. 对 [b,t] 维度的 loss 应用 mask
         return robust_masked_mean(per_frame_loss, valid)
+
 
 class ShapeLoss(nn.Module):
     def __init__(self, loss_type: str = 'l1'):
@@ -261,3 +268,117 @@ class BundleLoss(nn.Module):
             }
             | sub_state,
         )
+
+
+class BundleLoss2(nn.Module):
+    def __init__(
+        self,
+        lambda_param: float,
+        lambda_rel: float,
+        lambda_proj: float,
+        supervise_global: bool,
+        norm_by_hand: bool,
+        norm_idx: List[int],
+    ):
+        super().__init__()
+
+        self.mse = nn.MSELoss(reduction="none")
+        self.l1 = nn.L1Loss(reduction="none")
+
+        self.lambda_param = lambda_param
+        self.lambda_rel = lambda_rel
+        self.lambda_proj = lambda_proj
+
+        self.supervise_global = supervise_global
+        self.norm_by_hand = norm_by_hand
+        self.norm_idx = norm_idx
+
+        self.rmano_layer = RMANOLayer()
+
+    def get_hand_norm_scale(self, j3d: torch.Tensor, valid: torch.Tensor):
+        """
+        Args:
+            j3d: [...,j,3]
+            valid: [...,j]
+            return: [...], [...]
+        """
+        d = j3d[..., self.norm_idx[:-1], :] - j3d[..., self.norm_idx[1:], :]
+        d = torch.sum(torch.sqrt(torch.sum(d ** 2, dim=-1)), dim=-1) # [...]
+        flag = torch.all(valid[:, :, self.norm_idx] > 0.5, dim=-1).float()
+        return d, flag
+
+    def forward(self, pose_pred, shape_pred, trans_pred, batch):
+        """
+        Args:
+            xxx_pred: [b,t,48/10/3]
+        """
+        # fk to pose
+        with torch.no_grad():
+            joint_rel_gt, vert_rel_gt = self.rmano_layer(batch["mano_pose"], batch["mano_shape"])
+            # decouple shape and pose
+            joint_rel_pred, vert_rel_pred = self.rmano_layer(pose_pred, batch["mano_shape"])
+        if self.norm_by_hand:
+            # [b,t]
+            norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
+                batch["joint_cam"], batch["joint_valid"]
+            )
+
+        # get data
+        pose_gt = batch["mano_pose"]
+        shape_gt = batch["mano_shape"]
+        mano_valid = batch["mano_valid"] # [b,t]
+        joint_valid = batch["joint_valid"] # [b,t,j]
+
+        # get trans gt data
+        trans_gt = batch["joint_cam"][:, :, 0] # [b,t,3]
+        if self.norm_by_hand:
+            trans_gt = trans_gt / norm_scale_gt[..., None]
+
+        # param loss
+        loss_theta = self.l1(pose_pred, pose_gt) # [b,t,d]
+        loss_theta = torch.mean(loss_theta * mano_valid[..., None])
+        loss_shape = self.l1(shape_pred, shape_gt) # [b,t,d]
+        loss_shape = torch.mean(loss_shape * mano_valid[..., None])
+        loss_trans = self.l1(trans_pred, trans_gt) # [b,t,d]
+        loss_trans = torch.mean(loss_trans * joint_valid[:, :, :1] * norm_valid_gt[..., None])
+
+        # joint loss
+        loss_joint_rel = self.mse(joint_rel_pred, joint_rel_gt) # [b,t,j,d]
+        loss_joint_rel = torch.mean(loss_joint_rel * joint_valid[..., None])
+
+        if self.norm_by_hand:
+            trans_pred = trans_pred * norm_scale_gt[..., None]
+        joint_cam_gt = batch["joint_cam"]
+        joint_cam_pred = joint_rel_pred + trans_pred[:, :, None, :]
+        joint_img_gt = proj_points_3d(joint_cam_gt, batch["focal"], batch["princpt"])
+        joint_img_pred = proj_points_3d(joint_cam_pred, batch["focal"], batch["princpt"])
+        loss_joint_img = self.l1(joint_img_pred, joint_img_gt) # [b,t,j,2]
+        loss_joint_img = torch.mean(
+            loss_joint_img * joint_valid[..., None] * norm_valid_gt[..., None, None]
+        )
+
+        loss = (
+            self.lambda_param * (loss_theta + loss_shape + loss_trans) +
+            self.lambda_rel * loss_joint_rel +
+            self.lambda_proj * loss_joint_img
+        )
+
+        loss_state = {
+            "loss_theta": loss_theta.detach(),
+            "loss_shape": loss_shape.detach(),
+            "loss_trans": loss_trans.detach(),
+            "loss_joint_rel": loss_joint_rel.detach(),
+            "loss_joint_img": loss_joint_img.detach(),
+        }
+
+        fk_result = {
+            "verts_cam_gt": vert_rel_gt + batch["joint_cam"][:, :, :1],
+            "verts_rel_gt": vert_rel_gt,
+            "joint_cam_pred": joint_cam_pred,
+            "joint_rel_pred": joint_rel_pred,
+            "verts_cam_pred": vert_rel_pred + trans_pred[..., None, :],
+            "verts_rel_pred": vert_rel_pred,
+            "norm_valid_gt": norm_valid_gt,
+        }
+
+        return loss, loss_state, fk_result

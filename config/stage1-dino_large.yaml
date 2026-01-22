@@ -91,7 +91,7 @@ MODEL:
     zero_linear: true
 
 LOSS:
-  rel: 1.0
-  glo: 10.0
-  proj: 0.1
+  lambda_param: 1.0
+  lambda_rel: 0.001
+  lambda_proj: 0.001
   supervise_global: true

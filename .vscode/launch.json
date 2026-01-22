@@ -41,7 +41,6 @@
                 "AIM.server_url=.",
                 "GENERAL.description='debug run'",
                 "TRAIN.sample_per_device=32",
-                "MODEL.norm_by_hand=false"
             ],
             "justMyCode": true,
             "env": {

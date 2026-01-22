@@ -57,9 +57,9 @@ class PoseNet(nn.Module):
         joint_rep_type: str,
 
         supervise_global: bool,
-        loss_rel_scale: float,
-        loss_glo_scale: float,
-        loss_proj_scale: float,
+        lambda_param: float,
+        lambda_rel: float,
+        lambda_proj: float,
 
         freeze_backbone: bool,
         norm_by_hand: bool,
@@ -168,11 +168,13 @@ class PoseNet(nn.Module):
 
         # Loss
         self.supervise_global = supervise_global
-        self.loss_fn = BundleLoss(
-            rel=loss_rel_scale,
-            glo=loss_glo_scale,
-            proj=loss_proj_scale,
-            supervise_global=supervise_global,
+        self.loss_fn = BundleLoss2(
+            lambda_param=lambda_param,
+            lambda_rel=lambda_rel,
+            lambda_proj=lambda_proj,
+            supervise_global=True,
+            norm_by_hand=norm_by_hand,
+            norm_idx=self.norm_idx if norm_by_hand else []
         )
         self.metric_meter = MetricMeter()
 
@@ -336,7 +338,7 @@ class PoseNet(nn.Module):
 
     def forward(self, batch):
         # 1. forward
-        pose_pred, shape_pred, trans_norm_pred = self.predict_mano_param(
+        pose_pred, shape_pred, trans_pred = self.predict_mano_param(
             img=batch["patches"],
             bbox=batch["patch_bbox"],
             focal=batch["focal"],
@@ -345,90 +347,30 @@ class PoseNet(nn.Module):
         )
 
         # 2. loss, fk
-        with torch.no_grad():
-            _, verts_rel_gt = self.mano_to_pose(
-                batch["mano_pose"],
-                batch["mano_shape"],
-            )
-        if self.norm_by_hand:
-            norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
-                batch["joint_cam"], batch["joint_valid"]
-            )
-        else:
-            norm_scale_gt = torch.ones(batch["joint_cam"].shape[:2], device=pose_pred.device)
-            norm_valid_gt = torch.ones_like(norm_scale_gt)
-
-        joint_cam_gt = batch["joint_cam"]
-        joint_rel_gt = joint_cam_gt - joint_cam_gt[:, :, :1]
-        verts_cam_gt = verts_rel_gt + joint_cam_gt[:, :, :1]
-
-        joint_rel_pred, verts_rel_pred = self.mano_to_pose(
-            pose_pred, shape_pred
-        )
-        if self.norm_by_hand:
-            norm_scale_pred, _ = self.get_hand_norm_scale(
-                joint_rel_pred, torch.ones_like(batch["joint_valid"])
-            )  # [b,t]
-        else:
-            norm_scale_pred = torch.ones(batch["joint_cam"].shape[:2], device=pose_pred.device)
-
-        norm_scale_pred = norm_scale_pred.detach()
-        trans_pred = trans_norm_pred * norm_scale_pred[:, :, None]
-        joint_cam_pred = joint_rel_pred + trans_pred[:, :, None]
-        verts_cam_pred = verts_rel_pred + trans_pred[:, :, None]
-
-        joint_img_gt = proj_points_3d(joint_cam_gt, batch["focal"], batch["princpt"])
-        joint_img_pred = proj_points_3d(joint_cam_pred, batch["focal"], batch["princpt"])
-
-        loss, loss_state = self.loss_fn(
-            pose_pred,
-            shape_pred,
-            trans_norm_pred,
-            batch["mano_pose"],
-            batch["mano_shape"],
-            joint_cam_gt[:, :, 0] / norm_scale_gt[..., None],
-
-            joint_rel_gt,
-            joint_rel_pred,
-            verts_rel_gt,
-            verts_rel_pred,
-
-            joint_img_gt,
-            joint_img_pred,
-
-            batch["mano_valid"],
-            batch["joint_valid"],
-            norm_valid_gt,
-        )
-
-        norm_trans_factor = (norm_scale_gt / norm_scale_pred)[..., None, None]
-        joint_cam_pred = joint_cam_pred * norm_trans_factor
-        joint_rel_pred = joint_rel_pred * norm_trans_factor
-        verts_cam_pred = verts_cam_pred * norm_trans_factor
-        verts_rel_pred = verts_rel_pred * norm_trans_factor
+        loss, loss_state, result = self.loss_fn(pose_pred, shape_pred, trans_pred, batch)
 
         # 3. micro metric
         metric_state = self.metric_meter(
-            joint_cam_gt,
-            joint_rel_gt,
-            verts_cam_gt,
-            verts_rel_gt,
-            joint_cam_pred,
-            joint_rel_pred,
-            verts_cam_pred,
-            verts_rel_pred,
+            batch["joint_cam"],
+            batch["joint_cam"] - batch["joint_cam"][:, :, :1],
+            result["verts_cam_gt"],
+            result["verts_rel_gt"],
+            result["joint_cam_pred"],
+            result["joint_rel_pred"],
+            result["verts_cam_pred"],
+            result["verts_rel_pred"],
             batch["mano_valid"],
             batch["joint_valid"],
-            norm_valid_gt,
+            result["norm_valid_gt"],
         )
 
         loss_state = {
             "loss": loss,
             "state": loss_state | metric_state,
             "result": {
-                "joint_cam_pred": joint_cam_pred.detach(),
-                "verts_cam_pred": verts_cam_pred.detach(),
-                "verts_cam_gt": verts_cam_gt.detach(),
+                "joint_cam_pred": result["joint_cam_pred"].detach(),
+                "verts_cam_pred": result["verts_cam_pred"].detach(),
+                "verts_cam_gt": result["verts_cam_gt"].detach(),
             }
             | ({"norm_idx": self.norm_idx} if self.norm_by_hand else {}),
         }

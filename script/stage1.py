@@ -4,6 +4,7 @@ import os.path as osp
 import shutil
 import glob
 import logging
+from rich.logging import RichHandler
 import datetime
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -126,9 +127,9 @@ def setup_model(cfg: DictConfig):
         joint_rep_type=cfg.MODEL.joint_type,
 
         supervise_global=cfg.LOSS.get("supervise_global", True),
-        loss_rel_scale=cfg.LOSS.get("rel", 1.0),
-        loss_glo_scale=cfg.LOSS.get("glo", 10.),
-        loss_proj_scale=cfg.LOSS.get("proj", 0.1),
+        lambda_param=cfg.LOSS.get("lambda_param", 1.0),
+        lambda_rel=cfg.LOSS.get("lambda_rel", 0.001),
+        lambda_proj=cfg.LOSS.get("lambda_proj", 0.001),
 
         freeze_backbone=cfg.TRAIN.backbone_lr is None,
         norm_by_hand=cfg.MODEL.get("norm_by_hand", False),
@@ -467,14 +468,15 @@ def main(cfg: DictConfig):
         kwargs_handlers=[ddp_kwargs, timeout_kwargs]
     )
 
-    log_format = "[%(asctime)s][%(levelname)s][%(name)s] %(message)s"
-    date_format = "%m/%d/%Y %H:%M:%S"
+    log_format = "%(message)s"
+    date_format = "[%X]"
 
     logging.basicConfig(
         format=log_format,
         datefmt=date_format,
         level=logging.INFO,
-        force=True
+        handlers=[RichHandler(rich_tracebacks=True)],
+        force=True,
     )
 
     save_dir_obj = [None]
