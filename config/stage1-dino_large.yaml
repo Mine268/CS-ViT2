@@ -23,7 +23,7 @@ GENERAL:
   warmup_step: 5000
   cosine_cycle: 0.4
   num_worker: 4
-  prefetch_factor: 2
+  prefetch_factor: 1
   seed: 3229084
   resume_path: null
 
@@ -44,7 +44,8 @@ DATA:
     source: [
       /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*,
       /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/train/*,
-      /mnt/qnap/data/datasets/webdatasets/HO3D_v3/train/*
+      /mnt/qnap/data/datasets/webdatasets/HO3D_v3/train/*,
+      /mnt/qnap/data/datasets/webdatasets/HOT3D/train/*
     ]
     stride: 1
   val:

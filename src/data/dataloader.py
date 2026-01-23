@@ -65,7 +65,7 @@ def clip_to_t_frames(num_frames, stride, source):
                 if key in sample:
                     out_key = key.replace(".npy", "") # 去后缀
                     # 这里执行的是 Numpy 的第一维切片操作
-                    sub_sample[out_key] = sample[key][start:end]
+                    sub_sample[out_key] = sample[key][start:end].copy()
 
             yield sub_sample
 
@@ -137,10 +137,10 @@ def get_dataloader(
             nodesplitter=wds.split_by_node,
             workersplitter=wds.split_by_worker,
         )
-        .shuffle(1000)
+        .shuffle(20)
         .decode()
         .compose(partial(clip_to_t_frames, num_frames, stride))
-        .shuffle(5000)
+        .shuffle(200)
         .map(preprocess_frame)
         .batched(batch_size, partial=False, collation_fn=collate_fn)
         # .with_epoch(10000)
@@ -151,7 +151,7 @@ def get_dataloader(
         batch_size=None,
         num_workers=num_workers,
         prefetch_factor=prefetcher_factor if num_workers > 0 else None,
-        pin_memory=True
+        pin_memory=False
     )
 
     return dataloader

@@ -236,3 +236,4 @@ model/
 checkpoint/
 *.pkl
 *.ipynb
+tests/temp*

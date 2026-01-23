@@ -515,5 +515,44 @@ def test_dataloader2():
     verify_origin_data(batch_, "test/temp_origin", bx, tx)
 
 
+def test_dataloader3():
+    import random
+    random.seed(42)
+    np.random.seed(42)
+    torch.manual_seed(42)
+
+    loader = get_dataloader(
+        glob.glob(
+            # "/mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*",
+            # "/mnt/qnap/data/datasets/webdatasets/DexYCB/s1/train/*",
+            # "/mnt/qnap/data/datasets/webdatasets/HO3D_v3/train/*",
+            "/mnt/qnap/data/datasets/webdatasets/HOT3D/train/*",
+        ),
+        num_frames=1,
+        stride=1,
+        batch_size=42*4,
+        num_workers=2,
+        prefetcher_factor=2,
+        infinite=True,
+    )
+
+    for i, batch_ in enumerate(tqdm.tqdm(loader, ncols=70)):
+        batch = copy.deepcopy(batch_)
+        # 验证数据规整的正确性
+        batch2, trans_2d_mat = preprocess_batch(
+            batch,
+            [256, 256],
+            1.1,
+            [0.9, 1.1],
+            [0.8, 1.1],
+            torch.pi / 12,
+            "3",
+            True,
+            torch.device("cuda:0")
+        )
+        print(type(batch2))
+
+
 if __name__ == "__main__":
-    test_dataloader2()
+    # test_dataloader2()
+    test_dataloader3()

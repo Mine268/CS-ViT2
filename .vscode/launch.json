@@ -21,12 +21,19 @@
             "console": "integratedTerminal"
         },
 
-
         {
             "name": "test_PoseNet",
             "type": "debugpy",
             "request": "launch",
             "module": "test.test_src_model_net",
+            "console": "integratedTerminal"
+        },
+
+        {
+            "name": "test_dataloader",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "test.test_src_data_dataloader",
             "console": "integratedTerminal"
         },
 
