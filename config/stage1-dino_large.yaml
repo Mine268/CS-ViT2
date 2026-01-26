@@ -81,6 +81,7 @@ MODEL:
     skip_token_embed: false
     use_mean_init: false
     denorm_output: false
+    heatmap_resolution: [1024, 1024, 2048]
   persp_info_embed:
     type: "ca"
     num_sample: 8
@@ -93,6 +94,8 @@ MODEL:
 
 LOSS:
   lambda_param: 1.0
-  lambda_rel: 0.001
+  lambda_rel: 0.0001
   lambda_proj: 0.001
   supervise_global: true
+  supervise_heatmap: true
+  heatmap_sigma: 6.0

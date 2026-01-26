@@ -44,6 +44,7 @@ class PoseNet(nn.Module):
         handec_skip_token_embed: bool,
         handec_mean_init: bool,
         handec_denorm_output: bool,
+        handec_heatmap_resulotion: Union[int, Tuple[int]],
 
         pie_type: str,
         num_pie_sample: int,
@@ -57,9 +58,11 @@ class PoseNet(nn.Module):
         joint_rep_type: str,
 
         supervise_global: bool,
+        supervise_heatmap: bool,
         lambda_param: float,
         lambda_rel: float,
         lambda_proj: float,
+        hm_sigma: float,
 
         freeze_backbone: bool,
         norm_by_hand: bool,
@@ -125,7 +128,8 @@ class PoseNet(nn.Module):
             skip_token_embedding=handec_skip_token_embed,
             use_mean_init=handec_mean_init,
             denorm_output=handec_denorm_output,
-            norm_by_hand=norm_by_hand
+            norm_by_hand=norm_by_hand,
+            heatmap_resolution=handec_heatmap_resulotion,
         )
 
         self.norm_by_hand = norm_by_hand
@@ -168,13 +172,17 @@ class PoseNet(nn.Module):
 
         # Loss
         self.supervise_global = supervise_global
+        self.supervise_heatmap = supervise_heatmap
         self.loss_fn = BundleLoss2(
             lambda_param=lambda_param,
             lambda_rel=lambda_rel,
             lambda_proj=lambda_proj,
             supervise_global=True,
+            supervise_heatmap=supervise_heatmap,
             norm_by_hand=norm_by_hand,
-            norm_idx=self.norm_idx if norm_by_hand else []
+            norm_idx=self.norm_idx if norm_by_hand else [],
+            hm_centers=None if not supervise_heatmap else self.handec.get_centers(),
+            hm_sigma=hm_sigma,
         )
         self.metric_meter = MetricMeter()
 
@@ -215,9 +223,12 @@ class PoseNet(nn.Module):
 
         # extract hand param
         # [b,d], [b,10], [b,3]
-        pred_hand_pose, pred_shape, pred_trans = self.handec(feats)
+        # [b,n], hm_x, hm_y, hm_z
+        (pred_hand_pose, pred_shape, pred_trans), pred_log_heatmaps = self.handec(feats)
+        if self.supervise_heatmap:
+            pred_trans.detach()
 
-        return pred_hand_pose, pred_shape, pred_trans
+        return (pred_hand_pose, pred_shape, pred_trans), pred_log_heatmaps
 
     def predict_mano_param(
         self,
@@ -249,7 +260,7 @@ class PoseNet(nn.Module):
         )
 
         # spatial encoding
-        pose, shape, trans = self.decode_hand_param(
+        (pose, shape, trans), log_heatmaps = self.decode_hand_param(
             img=img,
             bbox=bbox,
             focal=focal,
@@ -276,16 +287,18 @@ class PoseNet(nn.Module):
             lambda t: eps.rearrange(t, "(b t) d -> b t d", t=num_frame),
             [pose, shape, trans]
         )
+        log_heatmaps = tuple(
+            map(
+                lambda t: eps.rearrange(t, "(b t) d -> b t d", t=num_frame),
+                log_heatmaps,
+            )
+        )
         # if self.stage == PoseNet.Stage.STAGE2:
         #     pose_token = pose_token + self.pose_temporal_encoder(pose_token, timestamp)
         #     shape_token = shape_token + self.shape_temporal_encoder(shape_token, timestamp)
         #     trans_token = trans_token + self.trans_temporal_encoder(trans_token, timestamp)
 
-        # detokenize into pose
-        # [b,d] [b,t,d]
-        # pose, shape, trans = self.mano_detokenizer(pose_token, shape_token, trans_token)
-
-        return pose, shape, trans
+        return pose, shape, trans, log_heatmaps
 
     def mano_to_pose(self, pose, shape):
         batch_size, _, _ = pose.shape
@@ -338,7 +351,7 @@ class PoseNet(nn.Module):
 
     def forward(self, batch):
         # 1. forward
-        pose_pred, shape_pred, trans_pred = self.predict_mano_param(
+        pose_pred, shape_pred, trans_pred, log_hm_pred = self.predict_mano_param(
             img=batch["patches"],
             bbox=batch["patch_bbox"],
             focal=batch["focal"],
@@ -347,7 +360,9 @@ class PoseNet(nn.Module):
         )
 
         # 2. loss, fk
-        loss, loss_state, result = self.loss_fn(pose_pred, shape_pred, trans_pred, batch)
+        loss, loss_state, result = self.loss_fn(
+            pose_pred, shape_pred, trans_pred, log_hm_pred, batch
+        )
 
         # 3. micro metric
         metric_state = self.metric_meter(

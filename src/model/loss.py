@@ -277,8 +277,11 @@ class BundleLoss2(nn.Module):
         lambda_rel: float,
         lambda_proj: float,
         supervise_global: bool,
+        supervise_heatmap: bool,
         norm_by_hand: bool,
         norm_idx: List[int],
+        hm_centers: Optional[Tuple[torch.Tensor]],
+        hm_sigma: float,
     ):
         super().__init__()
 
@@ -290,6 +293,12 @@ class BundleLoss2(nn.Module):
         self.lambda_proj = lambda_proj
 
         self.supervise_global = supervise_global
+        self.supervise_heatmap = supervise_heatmap
+        if supervise_heatmap:
+            self.register_buffer("x_centers", hm_centers[0])
+            self.register_buffer("y_centers", hm_centers[1])
+            self.register_buffer("z_centers", hm_centers[2])
+            self.hm_sigma = hm_sigma
         self.norm_by_hand = norm_by_hand
         self.norm_idx = norm_idx
 
@@ -307,16 +316,49 @@ class BundleLoss2(nn.Module):
         flag = torch.all(valid[:, :, self.norm_idx] > 0.5, dim=-1).float()
         return d, flag
 
-    def forward(self, pose_pred, shape_pred, trans_pred, batch):
+    def compute_hm_ce(
+        self,
+        pred_log_probs: torch.Tensor,
+        gt_coords: torch.Tensor,
+        grid_positions: torch.Tensor,
+    ):
         """
         Args:
-            xxx_pred: [b,t,48/10/3]
+            pred_log_probs: Tensor [..., N] **必须已经经过 LogSoftmax 处理**。即输入已经是 log(probability)。
+            gt_coords: Tensor [...] 真值坐标。
+            grid_positions: Tensor [N] 网格坐标。
+        Return:
+            [...]
+        """
+        gt_coords.unsqueeze_(-1)
+
+        grid_view_shape = [1] * gt_coords.dim()
+        grid_view_shape[-1] = -1
+        grid_positions = grid_positions.view(grid_view_shape)
+
+        squared_diff = (gt_coords - grid_positions) ** 2
+
+        target_unnormalized = torch.exp(-squared_diff / (2 * self.hm_sigma**2))
+        target_probs = target_unnormalized / (target_unnormalized.sum(dim=-1, keepdim=True) + 1e-9)
+
+        loss = -(target_probs * pred_log_probs).sum(dim=-1)
+
+        return loss
+
+    def forward(self, pose_pred, shape_pred, trans_pred, log_hm_pred, batch):
+        """
+        Args:
+            xxx_pred: [b,t,48/10/3,n]
         """
         # fk to pose
         with torch.no_grad():
-            joint_rel_gt, vert_rel_gt = self.rmano_layer(batch["mano_pose"], batch["mano_shape"])
+            _, vert_rel_gt = self.rmano_layer(
+                batch["mano_pose"], batch["mano_shape"]
+            )
             # decouple shape and pose
-            joint_rel_pred, vert_rel_pred = self.rmano_layer(pose_pred, batch["mano_shape"])
+            joint_rel_pred, vert_rel_pred = self.rmano_layer(
+                pose_pred, shape_pred.detach()
+            )
         if self.norm_by_hand:
             # [b,t]
             norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
@@ -339,11 +381,21 @@ class BundleLoss2(nn.Module):
         loss_theta = torch.mean(loss_theta * mano_valid[..., None])
         loss_shape = self.l1(shape_pred, shape_gt) # [b,t,d]
         loss_shape = torch.mean(loss_shape * mano_valid[..., None])
-        loss_trans = self.l1(trans_pred, trans_gt) # [b,t,d]
-        loss_trans = torch.mean(loss_trans * joint_valid[:, :, :1] * norm_valid_gt[..., None])
+        if not self.supervise_heatmap: # supervise on trans
+            loss_trans = self.l1(trans_pred, trans_gt) # [b,t,d]
+            loss_trans = torch.mean(loss_trans * joint_valid[:, :, :1] * norm_valid_gt[..., None])
+        else: # supervise on heatmap, using cross entropy
+            loss_trans = (
+                self.compute_hm_ce(log_hm_pred[0], trans_gt[..., 0], self.x_centers)
+                + self.compute_hm_ce(log_hm_pred[1], trans_gt[..., 1], self.y_centers)
+                + self.compute_hm_ce(log_hm_pred[2], trans_gt[..., 2], self.z_centers)
+            )
+            loss_trans = torch.mean(
+                loss_trans * joint_valid[:, :, 0] * norm_valid_gt
+            )
 
         # joint loss
-        loss_joint_rel = self.mse(joint_rel_pred, joint_rel_gt) # [b,t,j,d]
+        loss_joint_rel = self.mse(joint_rel_pred, batch["joint_rel"]) # [b,t,j,d]
         loss_joint_rel = torch.mean(loss_joint_rel * joint_valid[..., None])
 
         if self.norm_by_hand:

@@ -33,7 +33,7 @@
             "name": "test_dataloader",
             "type": "debugpy",
             "request": "launch",
-            "module": "test.test_src_data_dataloader",
+            "module": "tests.test_src_data_dataloader",
             "console": "integratedTerminal"
         },
 

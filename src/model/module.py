@@ -16,6 +16,13 @@ from .hamer_module import Attention, PreNorm, FeedForward, TransformerDecoder, d
 logger = get_logger(__name__)
 
 
+def make_tup(x, n):
+    if isinstance(x, tuple):
+        return x
+    else:
+        return (x,) * n
+
+
 class TRotionalPositionEmbedding(nn.Module):
     def __init__(self, dim: int, multi_head: bool = False):
         super(TRotionalPositionEmbedding, self).__init__()
@@ -457,32 +464,43 @@ class SoftargmaxHead3D(nn.Module):
     def __init__(
         self,
         dim: int,
-        n_sample: int,
+        resulotuion: int,
         x_range, y_range, z_range
     ):
         super().__init__()
 
-        self.decx = nn.Linear(dim, n_sample, bias=False)
-        self.decy = nn.Linear(dim, n_sample, bias=False)
-        self.decz = nn.Linear(dim, n_sample * 2, bias=False)
+        self.decx = nn.Linear(dim, resulotuion[0], bias=False)
+        self.decy = nn.Linear(dim, resulotuion[1], bias=False)
+        self.decz = nn.Linear(dim, resulotuion[2], bias=False)
 
-        self.register_buffer("x_centers", torch.linspace(x_range[0], x_range[1], n_sample))
-        self.register_buffer("y_centers", torch.linspace(y_range[0], y_range[1], n_sample))
-        self.register_buffer("z_centers", torch.linspace(z_range[0], z_range[1], n_sample * 2))
+        self.register_buffer("x_centers", torch.linspace(x_range[0], x_range[1], resulotuion[0]))
+        self.register_buffer("y_centers", torch.linspace(y_range[0], y_range[1], resulotuion[1]))
+        self.register_buffer("z_centers", torch.linspace(z_range[0], z_range[1], resulotuion[2]))
 
     def forward(self, token: torch.Tensor):
         """
         token: [...,d]
         """
-        logit_x = torch.nn.functional.softmax(self.decx(token), dim=-1)
-        logit_y = torch.nn.functional.softmax(self.decy(token), dim=-1)
-        logit_z = torch.nn.functional.softmax(self.decz(token), dim=-1)
+        out_x = self.decx(token)
+        out_y = self.decy(token)
+        out_z = self.decz(token)
 
-        pred_x = torch.sum(logit_x * self.x_centers[None, :], dim=-1, keepdim=True)
-        pred_y = torch.sum(logit_y * self.y_centers[None, :], dim=-1, keepdim=True)
-        pred_z = torch.sum(logit_z * self.z_centers[None, :], dim=-1, keepdim=True)
+        log_hm_x = torch.nn.functional.log_softmax(out_x, dim=-1)
+        log_hm_y = torch.nn.functional.log_softmax(out_y, dim=-1)
+        log_hm_z = torch.nn.functional.log_softmax(out_z, dim=-1)
 
-        return torch.cat([pred_x, pred_y, pred_z], dim=-1) # [...,3]
+        hm_x = torch.nn.functional.softmax(out_x, dim=-1)
+        hm_y = torch.nn.functional.softmax(out_y, dim=-1)
+        hm_z = torch.nn.functional.softmax(out_z, dim=-1)
+
+        pred_x = torch.sum(hm_x * self.x_centers[None, :], dim=-1, keepdim=True)
+        pred_y = torch.sum(hm_y * self.y_centers[None, :], dim=-1, keepdim=True)
+        pred_z = torch.sum(hm_z * self.z_centers[None, :], dim=-1, keepdim=True)
+
+        return torch.cat([pred_x, pred_y, pred_z], dim=-1), (log_hm_x, log_hm_y, log_hm_z) # [...,3]
+
+    def get_centers(self):
+        return (self.x_centers, self.y_centers, self.z_centers)
 
 
 # ref: hamer
@@ -507,6 +525,7 @@ class MANOTransformerDecoderHead(nn.Module):
         use_mean_init: bool = True,
         denorm_output: bool = False,
         norm_by_hand: bool = False,
+        heatmap_resolution: Union[int, Tuple[int]] = (1024, 1024, 2048),
     ):
         super().__init__()
         assert joint_rep_type in JOINT_DIM_DICT
@@ -537,12 +556,13 @@ class MANOTransformerDecoderHead(nn.Module):
 
         self.norm_by_hand = norm_by_hand
         norm_stats = np.load(NORM_STAT_NPZ)
+        heatmap_resolution = make_tup(heatmap_resolution, 3)
         if norm_by_hand:
             norm_mean = norm_stats["norm_mean"]
             norm_std = norm_stats["norm_std"]
             self.deccam = SoftargmaxHead3D(
                 dim,
-                1024,
+                heatmap_resolution,
                 [norm_mean[0] - norm_std[0] * 4, norm_mean[0] + norm_std[0] * 4],
                 [norm_mean[1] - norm_std[1] * 4, norm_mean[1] + norm_std[1] * 4],
                 [norm_mean[2] - norm_std[2] * 4, norm_mean[2] + norm_std[2] * 4],
@@ -553,7 +573,7 @@ class MANOTransformerDecoderHead(nn.Module):
             # std ~= 250 mm, so 1024
             self.deccam = SoftargmaxHead3D(
                 dim,
-                1024,
+                heatmap_resolution,
                 [mean[0] - std[0] * 4, mean[0] + std[0] * 4],
                 [mean[1] - std[1] * 4, mean[1] + std[1] * 4],
                 [mean[2] - std[2] * 4, mean[2] + std[2] * 4],
@@ -627,7 +647,7 @@ class MANOTransformerDecoderHead(nn.Module):
 
         pred_hand_pose = self.decpose(token_out) # + init_hand_pose
         pred_betas = self.decshape(token_out) # + init_betas
-        pred_cam = self.deccam(token_out) # + init_cam
+        pred_cam, pred_log_heatmaps = self.deccam(token_out) # + init_cam
 
         if self.denorm_output:
             # [b,d]
@@ -638,7 +658,10 @@ class MANOTransformerDecoderHead(nn.Module):
             pred_betas = pred_mano_param[:, self.npose : self.npose + MANO_SHAPE_DIM]
             pred_cam = pred_mano_param[:, -3:]
 
-        return pred_hand_pose, pred_betas, pred_cam
+        return (pred_hand_pose, pred_betas, pred_cam), pred_log_heatmaps
+
+    def get_centers(self):
+        return self.deccam.get_centers()
 
 
 class TemporalEncoder(nn.Module):

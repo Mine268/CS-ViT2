@@ -114,6 +114,7 @@ def setup_model(cfg: DictConfig):
         handec_skip_token_embed=cfg.MODEL.handec.skip_token_embed,
         handec_mean_init=cfg.MODEL.handec.get("use_mean_init", True),
         handec_denorm_output=cfg.MODEL.handec.get("denorm_output", False),
+        handec_heatmap_resulotion=cfg.MODEL.handec.get("heatmap_resulotion", 1024),
 
         pie_type=cfg.MODEL.persp_info_embed.type,
         num_pie_sample=cfg.MODEL.persp_info_embed.num_sample,
@@ -127,9 +128,11 @@ def setup_model(cfg: DictConfig):
         joint_rep_type=cfg.MODEL.joint_type,
 
         supervise_global=cfg.LOSS.get("supervise_global", True),
+        supervise_heatmap=cfg.LOSS.get("supervise_heatmap", True),
         lambda_param=cfg.LOSS.get("lambda_param", 1.0),
         lambda_rel=cfg.LOSS.get("lambda_rel", 0.001),
         lambda_proj=cfg.LOSS.get("lambda_proj", 0.001),
+        hm_sigma=cfg.LOSS.get("heatmap_sigma", 3),
 
         freeze_backbone=cfg.TRAIN.backbone_lr is None,
         norm_by_hand=cfg.MODEL.get("norm_by_hand", False),
