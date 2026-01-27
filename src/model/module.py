@@ -16,13 +16,6 @@ from .hamer_module import Attention, PreNorm, FeedForward, TransformerDecoder, d
 logger = get_logger(__name__)
 
 
-def make_tup(x, n):
-    if isinstance(x, tuple):
-        return x
-    else:
-        return (x,) * n
-
-
 class TRotionalPositionEmbedding(nn.Module):
     def __init__(self, dim: int, multi_head: bool = False):
         super(TRotionalPositionEmbedding, self).__init__()
@@ -556,7 +549,6 @@ class MANOTransformerDecoderHead(nn.Module):
 
         self.norm_by_hand = norm_by_hand
         norm_stats = np.load(NORM_STAT_NPZ)
-        heatmap_resolution = make_tup(heatmap_resolution, 3)
         if norm_by_hand:
             norm_mean = norm_stats["norm_mean"]
             norm_std = norm_stats["norm_std"]
@@ -570,7 +562,6 @@ class MANOTransformerDecoderHead(nn.Module):
         else:
             mean = norm_stats["mean"]
             std = norm_stats["std"]
-            # std ~= 250 mm, so 1024
             self.deccam = SoftargmaxHead3D(
                 dim,
                 heatmap_resolution,

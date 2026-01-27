@@ -114,7 +114,7 @@ def setup_model(cfg: DictConfig):
         handec_skip_token_embed=cfg.MODEL.handec.skip_token_embed,
         handec_mean_init=cfg.MODEL.handec.get("use_mean_init", True),
         handec_denorm_output=cfg.MODEL.handec.get("denorm_output", False),
-        handec_heatmap_resulotion=cfg.MODEL.handec.get("heatmap_resulotion", 1024),
+        handec_heatmap_resulotion=cfg.MODEL.handec.get("heatmap_resolution", 1024),
 
         pie_type=cfg.MODEL.persp_info_embed.type,
         num_pie_sample=cfg.MODEL.persp_info_embed.num_sample,

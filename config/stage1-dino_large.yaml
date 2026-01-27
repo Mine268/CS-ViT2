@@ -35,9 +35,9 @@ TRAIN:
   weight_decay: 1e-4
   sample_per_device: 32
   expansion_ratio: 2.0
-  scale_z_range: [0.8, 1.2]
-  scale_f_range: [0.8, 1.2]
-  persp_rot_max: 0.2617993877991494 # pi/12
+  scale_z_range: [1., 1.]
+  scale_f_range: [1., 1.]
+  persp_rot_max: 0. # pi/12
 
 DATA:
   train:
@@ -81,7 +81,7 @@ MODEL:
     skip_token_embed: false
     use_mean_init: false
     denorm_output: false
-    heatmap_resolution: [1024, 1024, 2048]
+    heatmap_resolution: [256, 256, 256]
   persp_info_embed:
     type: "ca"
     num_sample: 8
@@ -98,4 +98,4 @@ LOSS:
   lambda_proj: 0.001
   supervise_global: true
   supervise_heatmap: true
-  heatmap_sigma: 6.0
+  heatmap_sigma: 0.09 # normalized by hand
