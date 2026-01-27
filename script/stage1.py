@@ -129,9 +129,11 @@ def setup_model(cfg: DictConfig):
 
         supervise_global=cfg.LOSS.get("supervise_global", True),
         supervise_heatmap=cfg.LOSS.get("supervise_heatmap", True),
-        lambda_param=cfg.LOSS.get("lambda_param", 1.0),
-        lambda_rel=cfg.LOSS.get("lambda_rel", 0.001),
-        lambda_proj=cfg.LOSS.get("lambda_proj", 0.001),
+        lambda_theta=cfg.LOSS.get("lambda_theta", 2.81),
+        lambda_shape=cfg.LOSS.get("lambda_shape", 1.38),
+        lambda_trans=cfg.LOSS.get("lambda_trans", 0.123),
+        lambda_rel=cfg.LOSS.get("lambda_rel", 0.000305),
+        lambda_img=cfg.LOSS.get("lambda_img", 0.00512),
         hm_sigma=cfg.LOSS.get("heatmap_sigma", 3),
 
         freeze_backbone=cfg.TRAIN.backbone_lr is None,

@@ -59,9 +59,11 @@ class PoseNet(nn.Module):
 
         supervise_global: bool,
         supervise_heatmap: bool,
-        lambda_param: float,
+        lambda_theta: float,
+        lambda_shape: float,
+        lambda_trans: float,
         lambda_rel: float,
-        lambda_proj: float,
+        lambda_img: float,
         hm_sigma: float,
 
         freeze_backbone: bool,
@@ -174,9 +176,11 @@ class PoseNet(nn.Module):
         self.supervise_global = supervise_global
         self.supervise_heatmap = supervise_heatmap
         self.loss_fn = BundleLoss2(
-            lambda_param=lambda_param,
+            lambda_theta=lambda_theta,
+            lambda_shape=lambda_shape,
+            lambda_trans=lambda_trans,
             lambda_rel=lambda_rel,
-            lambda_proj=lambda_proj,
+            lambda_img=lambda_img,
             supervise_global=True,
             supervise_heatmap=supervise_heatmap,
             norm_by_hand=norm_by_hand,

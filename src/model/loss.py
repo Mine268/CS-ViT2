@@ -273,9 +273,11 @@ class BundleLoss(nn.Module):
 class BundleLoss2(nn.Module):
     def __init__(
         self,
-        lambda_param: float,
+        lambda_theta: float,
+        lambda_shape: float,
+        lambda_trans: float,
         lambda_rel: float,
-        lambda_proj: float,
+        lambda_img: float,
         supervise_global: bool,
         supervise_heatmap: bool,
         norm_by_hand: bool,
@@ -288,9 +290,11 @@ class BundleLoss2(nn.Module):
         self.mse = nn.MSELoss(reduction="none")
         self.l1 = nn.L1Loss(reduction="none")
 
-        self.lambda_param = lambda_param
+        self.lambda_theta = lambda_theta
+        self.lambda_shape = lambda_shape
+        self.lambda_trans = lambda_trans
         self.lambda_rel = lambda_rel
-        self.lambda_proj = lambda_proj
+        self.lambda_img = lambda_img
 
         self.supervise_global = supervise_global
         self.supervise_heatmap = supervise_heatmap
@@ -410,9 +414,11 @@ class BundleLoss2(nn.Module):
         )
 
         loss = (
-            self.lambda_param * (loss_theta + loss_shape + loss_trans) +
+            self.lambda_theta * loss_theta +
+            self.lambda_shape * loss_shape +
+            self.lambda_trans * loss_trans +
             self.lambda_rel * loss_joint_rel +
-            self.lambda_proj * loss_joint_img
+            self.lambda_img * loss_joint_img
         )
 
         loss_state = {

@@ -93,9 +93,11 @@ MODEL:
     zero_linear: true
 
 LOSS:
-  lambda_param: 1.0
-  lambda_rel: 0.0001
-  lambda_proj: 0.001
+  lambda_theta: 2.81      # MANO pose parameters (16% contribution)
+  lambda_shape: 1.38      # MANO shape parameters (12% contribution)
+  lambda_trans: 0.123     # Root joint translation (30% contribution)
+  lambda_rel: 0.000305    # 3D joint relative positions (30% contribution)
+  lambda_img: 0.00512     # 2D joint projections (12% contribution)
   supervise_global: true
   supervise_heatmap: true
-  heatmap_sigma: 0.09 # normalized by hand
+  heatmap_sigma: 0.09     # normalized by hand
