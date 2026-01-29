@@ -399,7 +399,7 @@ class BundleLoss2(nn.Module):
             )
 
         # joint loss
-        loss_joint_rel = self.mse(joint_rel_pred, batch["joint_rel"]) # [b,t,j,d]
+        loss_joint_rel = self.l1(joint_rel_pred, batch["joint_rel"]) # [b,t,j,d]
         loss_joint_rel = torch.mean(loss_joint_rel * joint_valid[..., None])
 
         if self.norm_by_hand:

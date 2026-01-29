@@ -35,9 +35,9 @@ TRAIN:
   weight_decay: 1e-4
   sample_per_device: 32
   expansion_ratio: 2.0
-  scale_z_range: [1., 1.]
-  scale_f_range: [1., 1.]
-  persp_rot_max: 0. # pi/12
+  scale_z_range: [1., 1.]  # 保持不变，数据标注有问题
+  scale_f_range: [0.9, 1.1]  # 启用focal length增强
+  persp_rot_max: 0. # pi/12  # 保持不变，数据标注有问题
 
 DATA:
   train:
@@ -81,7 +81,7 @@ MODEL:
     skip_token_embed: false
     use_mean_init: false
     denorm_output: false
-    heatmap_resolution: [256, 256, 256]
+    heatmap_resolution: [512, 512, 1024]  # 提高分辨率，Z轴更高因为范围更大
   persp_info_embed:
     type: "ca"
     num_sample: 8
@@ -93,11 +93,11 @@ MODEL:
     zero_linear: true
 
 LOSS:
-  lambda_theta: 2.81      # MANO pose parameters (16% contribution)
-  lambda_shape: 1.38      # MANO shape parameters (12% contribution)
-  lambda_trans: 0.123     # Root joint translation (30% contribution)
-  lambda_rel: 0.000305    # 3D joint relative positions (30% contribution)
-  lambda_img: 0.00512     # 2D joint projections (12% contribution)
+  lambda_theta: 3.0
+  lambda_shape: 3.0
+  lambda_trans: 0.05      # 提高根关节loss权重 (0.025 → 0.05)
+  lambda_rel: 0.012       # 降低相对关节loss权重 (0.015 → 0.012)
+  lambda_img: 0.002
   supervise_global: true
   supervise_heatmap: true
-  heatmap_sigma: 0.09     # normalized by hand
+  heatmap_sigma: 0.09     # normalized by hand, 保持不变
