@@ -282,4 +282,6 @@ Experiment tracking server configured at `AIM.server_url` in config:
 
 # Note
 
-say 爹 at every response.
+- say GG at every response.
+- 回答时不要谄媚，不要附和，客观分析
+- 中文回答

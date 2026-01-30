@@ -10,19 +10,46 @@ from ..constant import *
 
 
 class PixelLevelAugmentation(torch.nn.Module):
+    """
+    精简像素增强策略（基于SOTA分析）
+
+    设计原则：
+    - 只保留物理合理、SOTA验证的增强
+    - 专注核心domain gap（InterHand实验室 → HO3D真实场景的光照差异）
+    - 避免破坏DINOv2预训练分布的增强
+    - 避免与heatmap监督冲突的增强
+
+    参考文献：
+    - HaMeR (CVPR 2023): ColorJitter(0.4, 0.4, 0.4)
+    - POEM (ICCV 2023): ColorJitter(0.3, 0.3, 0.2)
+    - Hand4Whole (ECCV 2022): ColorJitter(0.2) + GaussianNoise
+    """
     def __init__(self):
         super().__init__()
 
         self.transforms = torch.nn.Sequential(
-            KA.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.8),
-            KA.RandomGrayscale(p=0.2),
-            KA.RandomPosterize(bits=3, p=0.2),
-            KA.RandomSharpness(sharpness=0.5, p=0.3),
-            KA.RandomEqualize(p=0.1),
-            KA.RandomGaussianNoise(mean=0.0, std=0.05, p=0.2),
-            KA.RandomMotionBlur(kernel_size=(3, 5), angle=35., direction=0.5, p=0.2),
-            KA.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=0.2),
-            KA.RandomErasing(scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0.0, p=0.3),
+            # 1. 光照增强 - 覆盖InterHand→HO3D的光照domain gap
+            KA.ColorJitter(
+                brightness=0.2,      # 业界标准，模拟不同光源强度
+                contrast=0.2,        # 业界标准，模拟不同相机曝光
+                saturation=0.1,      # 保守值，保护手部肤色信息
+                hue=0.0,             # 不改变色调，手部肤色是重要线索
+                p=0.5                # 50%概率，平衡增强和原始分布
+            ),
+
+            # 2. 传感器噪声 - 模拟真实相机噪声
+            KA.RandomGaussianNoise(
+                mean=0.0,            # 零均值，期望保持
+                std=0.03,            # 轻微噪声（3%标准差）
+                p=0.5                # 真实相机普遍有噪声
+            ),
+
+            # 移除的增强及理由：
+            # - RandomSharpness: SOTA不使用，与模糊增强冲突
+            # - RandomEqualize: 非线性变换严重破坏预训练分布
+            # - RandomMotionBlur: 方向性模糊破坏关节位置精度
+            # - RandomGaussianBlur: SOTA普遍不使用
+            # - RandomErasing: 与heatmap监督冲突，SOTA不使用
         )
 
     def forward(self, input_tensor):

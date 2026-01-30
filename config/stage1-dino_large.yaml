@@ -75,7 +75,7 @@ MODEL:
     num_head: 16
     dim_head: 64
     dim_mlp: 4096
-    dropout: 0.0
+    dropout: 0.1  # 启用dropout提升泛化性
     norm: layer
     context_dim: 1024
     skip_token_embed: false
