@@ -21,10 +21,12 @@ GENERAL:
   vis_step: 100
   checkpoint_step: 3000
   warmup_step: 5000
+  dropout_warmup_step: 10000  # Dropout渐进式预热步数
   cosine_cycle: 0.4
   num_worker: 4
   prefetch_factor: 1
   seed: 3229084
+  val_seed: 42  # 验证集固定seed，确保每次验证使用相同数据
   resume_path: null
 
 TRAIN:

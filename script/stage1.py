@@ -24,6 +24,7 @@ from src.data.preprocess import preprocess_batch
 from src.model.net import PoseNet
 from src.utils.vis import vis
 from src.utils.metric import *
+from src.utils.train_utils import get_progressive_dropout
 
 
 logger = get_logger(__name__)
@@ -83,6 +84,7 @@ def setup_dataloader(cfg: DictConfig):
         num_workers=1, # cfg.GENERAL.num_worker,
         prefetcher_factor=cfg.GENERAL.prefetch_factor,
         infinite=False,
+        seed=cfg.GENERAL.get("val_seed", 42),  # 固定验证集seed确保一致性
     )
     logger.info(f"setup val loader: {val_sources}")
 
@@ -354,6 +356,17 @@ def train(
     data_iter = iter(train_loader)
 
     while global_step < total_step:
+        # 0. 动态调整dropout率（渐进式策略）
+        current_dropout = get_progressive_dropout(
+            step=global_step,
+            total_steps=total_step,
+            warmup_steps=cfg.GENERAL.get("dropout_warmup_step", 10000),
+            target_dropout=cfg.MODEL.handec.dropout
+        )
+        # 更新模型的dropout率
+        unwrapped_net = net.module if hasattr(net, 'module') else net
+        unwrapped_net.set_dropout_rate(current_dropout)
+
         # 1. 获取数据&增强
         batch_ = next(data_iter)
         batch, trans_2d_mat = preprocess_batch(
@@ -418,6 +431,9 @@ def train(
                     current_lr = scheduler.get_last_lr()[0]
                     fmt += f" lr={current_lr:.4e}"
 
+                    # 监控dropout率
+                    fmt += f" dropout={current_dropout:.3f}"
+
                     # 监控loss组成
                     fmt += f" total={loss.cpu().item():.4f}"
                     for k, v in state.items():
@@ -427,6 +443,13 @@ def train(
                         # 记录 Learning Rate
                         aim_run.track(
                             current_lr, name="lr", step=global_step, context={"subset": "train"}
+                        )
+                        # 记录 Dropout Rate
+                        aim_run.track(
+                            current_dropout,
+                            name="dropout_rate",
+                            step=global_step,
+                            context={"subset": "train"},
                         )
                         # 记录 Total Loss
                         aim_run.track(

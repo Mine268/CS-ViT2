@@ -408,6 +408,47 @@ class PoseNet(nn.Module):
     def get_norm_idx(self):
         return self.norm_idx
 
+    def set_dropout_rate(self, dropout_rate: float):
+        """
+        动态设置HandDecoder中所有Dropout层的dropout率
+
+        用于实现渐进式dropout策略：训练早期使用低dropout率（或0），
+        训练后期逐步提升dropout率以增强泛化性。
+
+        Args:
+            dropout_rate: 新的dropout率，范围[0.0, 1.0]
+
+        Examples:
+            >>> net.set_dropout_rate(0.0)  # 训练早期禁用dropout
+            >>> net.set_dropout_rate(0.1)  # 训练后期启用dropout
+        """
+        if not (0.0 <= dropout_rate <= 1.0):
+            raise ValueError(f"dropout_rate must be in [0.0, 1.0], got {dropout_rate}")
+
+        # 更新HandDecoder的transformer中所有dropout层
+        # 注意：TransformerDecoder包含一个内部的TransformerCrossAttn
+        if hasattr(self.handec, "transformer"):
+            transformer_decoder = self.handec.transformer
+            # TransformerDecoder.transformer是真正的TransformerCrossAttn
+            if hasattr(transformer_decoder, "transformer") and hasattr(
+                transformer_decoder.transformer, "layers"
+            ):
+                for layer_modules in transformer_decoder.transformer.layers:
+                    for wrapped_module in layer_modules:
+                        # PreNorm包装的模块，需要访问内部的fn
+                        if hasattr(wrapped_module, "fn"):
+                            inner_module = wrapped_module.fn
+                            # 更新Attention/CrossAttention中的dropout
+                            if hasattr(inner_module, "dropout") and isinstance(
+                                inner_module.dropout, nn.Dropout
+                            ):
+                                inner_module.dropout.p = dropout_rate
+                            # 更新FeedForward中的dropout（通常有两个）
+                            if hasattr(inner_module, "net"):
+                                for sub_module in inner_module.net:
+                                    if isinstance(sub_module, nn.Dropout):
+                                        sub_module.p = dropout_rate
+
     @override
     def train(self, mode=True):
         super(PoseNet, self).train(mode)

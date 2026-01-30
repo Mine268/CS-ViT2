@@ -128,8 +128,13 @@ def get_dataloader(
     num_workers: int,
     prefetcher_factor: int,
     infinite: bool = True,
+    seed: Optional[int] = None,
 ) -> wds.WebDataset:
-    """获得wds数据加载器"""
+    """获得wds数据加载器
+
+    Args:
+        seed: 随机种子,用于固定shuffle顺序(主要用于验证集保证一致性)
+    """
     dataset = (
         wds.WebDataset(
             url,
@@ -137,10 +142,10 @@ def get_dataloader(
             nodesplitter=wds.split_by_node,
             workersplitter=wds.split_by_worker,
         )
-        .shuffle(20)
+        .shuffle(20, rng=np.random.default_rng(seed) if seed is not None else None)
         .decode()
         .compose(partial(clip_to_t_frames, num_frames, stride))
-        .shuffle(200)
+        .shuffle(200, rng=np.random.default_rng(seed) if seed is not None else None)
         .map(preprocess_frame)
         .batched(batch_size, partial=False, collation_fn=collate_fn)
         # .with_epoch(10000)
