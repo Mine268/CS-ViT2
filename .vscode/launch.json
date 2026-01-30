@@ -48,6 +48,7 @@
                 "AIM.server_url=.",
                 "GENERAL.description='debug run'",
                 "TRAIN.sample_per_device=32",
+                "augmentation=aggressive"
             ],
             "justMyCode": true,
             "env": {

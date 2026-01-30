@@ -1,0 +1,28 @@
+# 消融实验：仅使用ColorJitter
+# 测试光照增强的单独效果
+
+color_jitter:
+  enabled: true
+  brightness: 0.2
+  contrast: 0.2
+  saturation: 0.1
+  hue: 0.0
+  p: 0.5
+
+gaussian_noise:
+  enabled: false
+
+gaussian_blur:
+  enabled: false
+
+sharpness:
+  enabled: false
+
+equalize:
+  enabled: false
+
+motion_blur:
+  enabled: false
+
+random_erasing:
+  enabled: false

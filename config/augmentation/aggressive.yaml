@@ -1,0 +1,44 @@
+# 消融实验：激进增强策略
+# 测试更强的增强参数
+
+color_jitter:
+  enabled: true
+  brightness: 0.4      # HaMeR风格
+  contrast: 0.4
+  saturation: 0.4
+  hue: 0.1
+  p: 0.8               # 更高概率
+
+gaussian_noise:
+  enabled: true
+  mean: 0.0
+  std: 0.05            # 更强噪声
+  p: 0.8
+
+gaussian_blur:
+  enabled: true
+  kernel_size: [7, 7]  # 更大kernel
+  sigma: [0.5, 2.0]
+  p: 0.3               # 更高概率
+
+sharpness:
+  enabled: false
+  sharpness: 0.5
+  p: 0.3
+
+equalize:
+  enabled: false
+  p: 0.3
+
+motion_blur:
+  enabled: false
+  kernel_size: 5
+  angle: 45.0
+  direction: 0.5
+  p: 0.3
+
+random_erasing:
+  enabled: false
+  p: 0.3
+  scale: [0.02, 0.1]
+  ratio: [0.3, 3.3]

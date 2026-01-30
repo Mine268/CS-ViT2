@@ -134,6 +134,10 @@ def get_dataloader(
 
     Args:
         seed: 随机种子,用于固定shuffle顺序(主要用于验证集保证一致性)
+
+    Note:
+        对于验证集固定seed，使用整数seed而非Generator对象，
+        因为Generator对象不能被pickle序列化，会导致checkpoint保存失败。
     """
     dataset = (
         wds.WebDataset(
@@ -142,10 +146,10 @@ def get_dataloader(
             nodesplitter=wds.split_by_node,
             workersplitter=wds.split_by_worker,
         )
-        .shuffle(20, rng=np.random.default_rng(seed) if seed is not None else None)
+        .shuffle(20, initial=seed if seed is not None else 0)
         .decode()
         .compose(partial(clip_to_t_frames, num_frames, stride))
-        .shuffle(200, rng=np.random.default_rng(seed) if seed is not None else None)
+        .shuffle(200, initial=seed if seed is not None else 0)
         .map(preprocess_frame)
         .batched(batch_size, partial=False, collation_fn=collate_fn)
         # .with_epoch(10000)

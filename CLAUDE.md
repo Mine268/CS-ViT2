@@ -285,3 +285,4 @@ Experiment tracking server configured at `AIM.server_url` in config:
 - say GG at every response.
 - 回答时不要谄媚，不要附和，客观分析
 - 中文回答
+- 运行之前激活我的环境`source .venv/bin/activate`

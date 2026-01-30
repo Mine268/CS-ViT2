@@ -1,0 +1,23 @@
+# 消融实验：完全禁用数据增强
+# 用于测试数据增强的整体效果
+
+color_jitter:
+  enabled: false
+
+gaussian_noise:
+  enabled: false
+
+gaussian_blur:
+  enabled: false
+
+sharpness:
+  enabled: false
+
+equalize:
+  enabled: false
+
+motion_blur:
+  enabled: false
+
+random_erasing:
+  enabled: false

@@ -1,0 +1,34 @@
+# 消融实验：添加GaussianBlur
+# 测试在基础增强上添加模糊的效果
+
+color_jitter:
+  enabled: true
+  brightness: 0.2
+  contrast: 0.2
+  saturation: 0.1
+  hue: 0.0
+  p: 0.5
+
+gaussian_noise:
+  enabled: true
+  mean: 0.0
+  std: 0.03
+  p: 0.5
+
+gaussian_blur:
+  enabled: true      # 启用模糊
+  kernel_size: [5, 5]
+  sigma: [0.3, 1.0]
+  p: 0.15
+
+sharpness:
+  enabled: false
+
+equalize:
+  enabled: false
+
+motion_blur:
+  enabled: false
+
+random_erasing:
+  enabled: false

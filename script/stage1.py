@@ -220,7 +220,8 @@ def val(
             persp_rot_max=cfg.TRAIN.persp_rot_max,
             joint_rep_type=cfg.MODEL.joint_type,
             augmentation_flag=False,
-            device=device
+            device=device,
+            pixel_aug=None  # 验证时不使用增强
         )
 
         output = net(batch)
@@ -352,6 +353,15 @@ def train(
     device = accelerator.device
     global_step = start_step
 
+    # 创建数据增强对象（训练时使用）
+    from src.data.preprocess import PixelLevelAugmentation
+    from omegaconf import OmegaConf
+    pixel_aug = None
+    if cfg.TRAIN.get('augmentation', None) is not None:
+        aug_config = OmegaConf.to_container(cfg.TRAIN.augmentation, resolve=True)
+        pixel_aug = PixelLevelAugmentation(aug_config).to(device)
+        pixel_aug.eval()  # 增强器始终在eval模式
+
     # start training
     data_iter = iter(train_loader)
 
@@ -378,7 +388,8 @@ def train(
             persp_rot_max=cfg.TRAIN.persp_rot_max,
             joint_rep_type=cfg.MODEL.joint_type,
             augmentation_flag=True,
-            device=device
+            device=device,
+            pixel_aug=pixel_aug  # 传递增强对象
         )
 
         # 2. 计算loss

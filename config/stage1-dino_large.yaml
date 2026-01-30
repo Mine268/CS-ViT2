@@ -1,5 +1,6 @@
 defaults:
   - _self_
+  - augmentation: default
   - override hydra/job_logging: none
   - override hydra/hydra_logging: none
 
@@ -37,9 +38,10 @@ TRAIN:
   weight_decay: 1e-4
   sample_per_device: 32
   expansion_ratio: 2.0
-  scale_z_range: [1., 1.]  # 保持不变，数据标注有问题
+  scale_z_range: [0.9, 1.1]  # 保持不变，数据标注有问题
   scale_f_range: [0.9, 1.1]  # 启用focal length增强
-  persp_rot_max: 0. # pi/12  # 保持不变，数据标注有问题
+  persp_rot_max: 0.0 # pi/12  # 保持不变，数据标注有问题
+  augmentation: ${augmentation}  # 引用顶层augmentation配置组
 
 DATA:
   train:

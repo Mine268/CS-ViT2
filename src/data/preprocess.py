@@ -11,11 +11,11 @@ from ..constant import *
 
 class PixelLevelAugmentation(torch.nn.Module):
     """
-    精简像素增强策略（基于SOTA分析）
+    可配置的像素级增强策略（支持动态插拔）
 
     设计原则：
-    - 只保留物理合理、SOTA验证的增强
-    - 专注核心domain gap（InterHand实验室 → HO3D真实场景的光照差异）
+    - 通过配置文件控制每个增强的开关和参数
+    - 便于进行消融实验，快速测试不同增强组合的效果
     - 避免破坏DINOv2预训练分布的增强
     - 避免与heatmap监督冲突的增强
 
@@ -23,34 +23,93 @@ class PixelLevelAugmentation(torch.nn.Module):
     - HaMeR (CVPR 2023): ColorJitter(0.4, 0.4, 0.4)
     - POEM (ICCV 2023): ColorJitter(0.3, 0.3, 0.2)
     - Hand4Whole (ECCV 2022): ColorJitter(0.2) + GaussianNoise
+
+    Args:
+        aug_config: 数据增强配置字典，包含各增强的开关和参数
     """
-    def __init__(self):
+    def __init__(self, aug_config: Optional[Dict] = None):
         super().__init__()
 
-        self.transforms = torch.nn.Sequential(
-            # 1. 光照增强 - 覆盖InterHand→HO3D的光照domain gap
-            KA.ColorJitter(
-                brightness=0.2,      # 业界标准，模拟不同光源强度
-                contrast=0.2,        # 业界标准，模拟不同相机曝光
-                saturation=0.1,      # 保守值，保护手部肤色信息
-                hue=0.0,             # 不改变色调，手部肤色是重要线索
-                p=0.5                # 50%概率，平衡增强和原始分布
-            ),
+        if aug_config is None:
+            # 默认配置：只使用ColorJitter和GaussianNoise
+            aug_config = {
+                'color_jitter': {'enabled': True, 'brightness': 0.2, 'contrast': 0.2,
+                                'saturation': 0.1, 'hue': 0.0, 'p': 0.5},
+                'gaussian_noise': {'enabled': True, 'mean': 0.0, 'std': 0.03, 'p': 0.5},
+            }
 
-            # 2. 传感器噪声 - 模拟真实相机噪声
-            KA.RandomGaussianNoise(
-                mean=0.0,            # 零均值，期望保持
-                std=0.03,            # 轻微噪声（3%标准差）
-                p=0.5                # 真实相机普遍有噪声
-            ),
+        # 动态构建增强pipeline
+        transforms = []
 
-            # 移除的增强及理由：
-            # - RandomSharpness: SOTA不使用，与模糊增强冲突
-            # - RandomEqualize: 非线性变换严重破坏预训练分布
-            # - RandomMotionBlur: 方向性模糊破坏关节位置精度
-            # - RandomGaussianBlur: SOTA普遍不使用
-            # - RandomErasing: 与heatmap监督冲突，SOTA不使用
-        )
+        # 1. 光照增强 - ColorJitter
+        if aug_config.get('color_jitter', {}).get('enabled', False):
+            cfg = aug_config['color_jitter']
+            transforms.append(KA.ColorJitter(
+                brightness=cfg.get('brightness', 0.2),
+                contrast=cfg.get('contrast', 0.2),
+                saturation=cfg.get('saturation', 0.1),
+                hue=cfg.get('hue', 0.0),
+                p=cfg.get('p', 0.5)
+            ))
+
+        # 2. 传感器噪声 - GaussianNoise
+        if aug_config.get('gaussian_noise', {}).get('enabled', False):
+            cfg = aug_config['gaussian_noise']
+            transforms.append(KA.RandomGaussianNoise(
+                mean=cfg.get('mean', 0.0),
+                std=cfg.get('std', 0.03),
+                p=cfg.get('p', 0.5)
+            ))
+
+        # 3. 模糊增强 - GaussianBlur
+        if aug_config.get('gaussian_blur', {}).get('enabled', False):
+            cfg = aug_config['gaussian_blur']
+            transforms.append(KA.RandomGaussianBlur(
+                kernel_size=tuple(cfg.get('kernel_size', [5, 5])),
+                sigma=tuple(cfg.get('sigma', [0.3, 1.0])),
+                p=cfg.get('p', 0.15)
+            ))
+
+        # 4. 锐化 - Sharpness
+        if aug_config.get('sharpness', {}).get('enabled', False):
+            cfg = aug_config['sharpness']
+            transforms.append(KA.RandomSharpness(
+                sharpness=cfg.get('sharpness', 0.5),
+                p=cfg.get('p', 0.3)
+            ))
+
+        # 5. 直方图均衡 - Equalize
+        if aug_config.get('equalize', {}).get('enabled', False):
+            cfg = aug_config['equalize']
+            transforms.append(KA.RandomEqualize(
+                p=cfg.get('p', 0.3)
+            ))
+
+        # 6. 运动模糊 - MotionBlur
+        if aug_config.get('motion_blur', {}).get('enabled', False):
+            cfg = aug_config['motion_blur']
+            transforms.append(KA.RandomMotionBlur(
+                kernel_size=cfg.get('kernel_size', 5),
+                angle=cfg.get('angle', 45.0),
+                direction=cfg.get('direction', 0.5),
+                p=cfg.get('p', 0.3)
+            ))
+
+        # 7. 随机擦除 - RandomErasing（注意：与heatmap监督冲突）
+        if aug_config.get('random_erasing', {}).get('enabled', False):
+            cfg = aug_config['random_erasing']
+            transforms.append(KA.RandomErasing(
+                p=cfg.get('p', 0.3),
+                scale=tuple(cfg.get('scale', [0.02, 0.1])),
+                ratio=tuple(cfg.get('ratio', [0.3, 3.3]))
+            ))
+
+        # 如果没有任何增强启用，使用Identity
+        if len(transforms) == 0:
+            transforms.append(torch.nn.Identity())
+
+        self.transforms = torch.nn.Sequential(*transforms)
+        self.num_transforms = len(transforms)
 
     def forward(self, input_tensor):
         B, T, C, H, W = input_tensor.shape
@@ -60,7 +119,6 @@ class PixelLevelAugmentation(torch.nn.Module):
         input_tensor_aug = torch.clamp(input_tensor_aug, 0.0, 1.0)
         return input_tensor_aug
 
-pixel_level_augemtation = PixelLevelAugmentation()
 
 def get_trans_3d_mat(
     rad: torch.Tensor,
@@ -211,7 +269,8 @@ def preprocess_batch(
     persp_rot_max: float,
     joint_rep_type: str,
     augmentation_flag: bool,
-    device: torch.device
+    device: torch.device,
+    pixel_aug = None
 ):
     """
     将wds的原始数据进行预处理和数据增强，最后送给模型
@@ -221,7 +280,9 @@ def preprocess_batch(
         patch_expansion: patch相较于正方形包围盒扩大的范围
         scale_z_range: 进行缩放/平移增强变换的系数范围
         scale_f_range: 进行内参增强变换的焦距乘数的范围
+        pixel_aug: 像素级增强器对象（可选），由调用方创建和管理
     """
+    # pixel_aug由调用方传入，不在此创建
     B, T = batch_origin["joint_cam"].shape[:2]
     trans_2d_mat = torch.eye(3, device=device).float()[None, None, :].expand(B, T, -1, -1)
 
@@ -409,7 +470,10 @@ def preprocess_batch(
             )
             patches.append(patch)
         patches: torch.Tensor = torch.stack(patches)
-        patches = pixel_level_augemtation(patches)
+
+        # 应用像素级增强（如果配置了）
+        if pixel_aug is not None:
+            patches = pixel_aug(patches)
 
         # 更新focal&princpt
         focal = focal_new
