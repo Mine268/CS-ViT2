@@ -234,6 +234,7 @@ def verify_batch(
     source_prefix: str,
     bx: int = 0,
     tx: int = 0,
+    origin_batch = None,
 ):
     import cv2
     import smplx
@@ -241,8 +242,12 @@ def verify_batch(
     trans_2d_mat = trans_2d_mat[bx, tx].cpu().numpy()
 
     # origin image
-    print("\nimgs_path=" + f"{source_prefix}/" + batch["imgs_path"][bx][tx])
-    img = cv2.imread(f"{source_prefix}/" + batch["imgs_path"][bx][tx])
+    if origin_batch is None:
+        print("\nimgs_path=" + f"{source_prefix}/" + batch["imgs_path"][bx][tx])
+        img = cv2.imread(f"{source_prefix}/" + batch["imgs_path"][bx][tx])
+    else:
+        print("\nread image from origin batch")
+        img = cv2.cvtColor(origin_batch["imgs"][bx][tx].permute(1, 2, 0).numpy(), cv2.COLOR_RGB2BGR)
     img = cv2.warpPerspective(img, trans_2d_mat, (img.shape[1], img.shape[0]))
     if batch["flip"][bx]:
         img = img[:, ::-1].copy()
@@ -466,9 +471,10 @@ def test_dataloader2():
 
     loader = get_dataloader(
         glob.glob(
-            "/mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*.tar"
+            # "/mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*.tar",
             # "/mnt/qnap/data/datasets/webdatasets/DexYCB/s1/train/*.tar"
             # "/mnt/qnap/data/datasets/webdatasets/HO3D_v3/evaluation/*.tar"
+            "/mnt/qnap/data/datasets/webdatasets/HOT3D/train/*",
         ),
         num_frames=7,
         stride=1,
@@ -491,7 +497,7 @@ def test_dataloader2():
             1.1,
             [0.9, 1.1],
             [0.8, 1.1],
-            torch.pi / 12,
+            torch.pi / 6,
             "3",
             True,
             torch.device("cuda:0")
@@ -504,6 +510,7 @@ def test_dataloader2():
             "/mnt/qnap/data/datasets/InterHand2.6M_5fps_batch1/images/train",
             bx,
             tx,
+            batch,
         )
         if not torch.all(batch2["joint_valid"][10, 0] > 0.5).item():
             print(f">> False in joint_valid, #iter={i}: {batch2['joint_valid'][10, 0]}")
