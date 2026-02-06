@@ -211,7 +211,7 @@ def val(
         if limit_step is not None and ix >= limit_step:
             break
 
-        batch, trans_2d_mat = preprocess_batch(
+        batch, trans_2d_mat, _ = preprocess_batch(
             batch_origin=batch_,
             patch_size=[cfg.MODEL.img_size, cfg.MODEL.img_size],
             patch_expanstion=cfg.TRAIN.expansion_ratio,
@@ -221,7 +221,8 @@ def val(
             joint_rep_type=cfg.MODEL.joint_type,
             augmentation_flag=False,
             device=device,
-            pixel_aug=None  # 验证时不使用增强
+            pixel_aug=None,  # 验证时不使用增强
+            perspective_normalization=cfg.TRAIN.get("perspective_normalization", False),
         )
 
         output = net(batch)
@@ -379,7 +380,7 @@ def train(
 
         # 1. 获取数据&增强
         batch_ = next(data_iter)
-        batch, trans_2d_mat = preprocess_batch(
+        batch, trans_2d_mat, _ = preprocess_batch(
             batch_origin=batch_,
             patch_size=[cfg.MODEL.img_size, cfg.MODEL.img_size],
             patch_expanstion=cfg.TRAIN.expansion_ratio,
@@ -389,7 +390,8 @@ def train(
             joint_rep_type=cfg.MODEL.joint_type,
             augmentation_flag=True,
             device=device,
-            pixel_aug=pixel_aug  # 传递增强对象
+            pixel_aug=pixel_aug,  # 传递增强对象
+            perspective_normalization=cfg.TRAIN.get("perspective_normalization", False),
         )
 
         # 2. 计算loss

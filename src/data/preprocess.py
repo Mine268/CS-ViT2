@@ -259,6 +259,104 @@ def apply_perspective_to_points(
 
     return points_transformed
 
+
+def build_intrinsic_matrices(
+    focal: torch.Tensor,
+    princpt: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    构建内参矩阵及其逆矩阵。
+
+    Args:
+        focal: [..., 2] 焦距 (fx, fy)
+        princpt: [..., 2] 主点 (cx, cy)
+
+    Returns:
+        intr: [..., 3, 3] 内参矩阵 K
+        intr_inv: [..., 3, 3] 内参逆矩阵 K^{-1}
+    """
+    prefix_shape = focal.shape[:-1]
+    device = focal.device
+    dtype = focal.dtype
+
+    intr = torch.zeros(*prefix_shape, 3, 3, device=device, dtype=dtype)
+    intr[..., 0, 0] = focal[..., 0]
+    intr[..., 1, 1] = focal[..., 1]
+    intr[..., 0, 2] = princpt[..., 0]
+    intr[..., 1, 2] = princpt[..., 1]
+    intr[..., 2, 2] = 1.0
+
+    intr_inv = torch.zeros(*prefix_shape, 3, 3, device=device, dtype=dtype)
+    intr_inv[..., 0, 0] = 1.0 / focal[..., 0]
+    intr_inv[..., 1, 1] = 1.0 / focal[..., 1]
+    intr_inv[..., 0, 2] = -princpt[..., 0] / focal[..., 0]
+    intr_inv[..., 1, 2] = -princpt[..., 1] / focal[..., 1]
+    intr_inv[..., 2, 2] = 1.0
+
+    return intr, intr_inv
+
+
+def compute_perspective_normalization_rotation(
+    hand_bbox: torch.Tensor,
+    focal: torch.Tensor,
+    princpt: torch.Tensor,
+) -> torch.Tensor:
+    """
+    计算将 bbox 中心旋转到主点（光轴）方向的透视矫正旋转矩阵。
+    满足 R @ ray_norm ≈ [0, 0, 1]，即将 bbox 中心的视线方向旋转到光轴。
+
+    Args:
+        hand_bbox: [B, T, 4] xyxy 格式的手部包围盒
+        focal: [B, T, 2] 焦距 (fx, fy)
+        princpt: [B, T, 2] 主点 (cx, cy)
+
+    Returns:
+        R: [B, T, 3, 3] 旋转矩阵
+    """
+    # 1. bbox 中心的归一化相机方向
+    cx_hand = (hand_bbox[..., 0] + hand_bbox[..., 2]) * 0.5  # [B, T]
+    cy_hand = (hand_bbox[..., 1] + hand_bbox[..., 3]) * 0.5  # [B, T]
+
+    rx = (cx_hand - princpt[..., 0]) / focal[..., 0]  # [B, T]
+    ry = (cy_hand - princpt[..., 1]) / focal[..., 1]  # [B, T]
+    rz = torch.ones_like(rx)                            # [B, T]
+
+    # 2. 归一化为单位向量
+    norm = torch.sqrt(rx**2 + ry**2 + rz**2)
+    rx = rx / norm
+    ry = ry / norm
+    rz = rz / norm
+
+    # 3. 旋转轴 = cross(ray_norm, [0,0,1]) = [ry, -rx, 0]
+    #    旋转角度 = arccos(rz)，用 atan2 更稳定
+    ax = ry   # [B, T]
+    ay = -rx  # [B, T]
+    sin_angle = torch.sqrt(ax**2 + ay**2)  # = sin(arccos(rz))
+    angle = torch.atan2(sin_angle, rz)     # [B, T]
+
+    # 4. 轴角: axis_angle = (axis / |axis|) * angle
+    #    退化处理: sin_angle ≈ 0 时 bbox 中心在主点上, R = I
+    safe_sin = torch.clamp(sin_angle, min=1e-8)
+
+    axis_angle = torch.stack([
+        ax / safe_sin * angle,
+        ay / safe_sin * angle,
+        torch.zeros_like(ax),
+    ], dim=-1)  # [B, T, 3]
+
+    # sin_angle < 1e-7 → 强制零向量 → R = I
+    degenerate_mask = (sin_angle < 1e-7).unsqueeze(-1).expand_as(axis_angle)
+    axis_angle = axis_angle.masked_fill(degenerate_mask, 0.0)
+
+    # 5. 轴角 → 旋转矩阵
+    prefix_shape = axis_angle.shape[:-1]  # (B, T)
+    R = KC.axis_angle_to_rotation_matrix(
+        axis_angle.reshape(-1, 3)
+    ).reshape(*prefix_shape, 3, 3)  # [B, T, 3, 3]
+
+    return R
+
+
 @torch.no_grad()
 def preprocess_batch(
     batch_origin,
@@ -270,7 +368,8 @@ def preprocess_batch(
     joint_rep_type: str,
     augmentation_flag: bool,
     device: torch.device,
-    pixel_aug = None
+    pixel_aug = None,
+    perspective_normalization: bool = False,
 ):
     """
     将wds的原始数据进行预处理和数据增强，最后送给模型
@@ -281,12 +380,15 @@ def preprocess_batch(
         scale_z_range: 进行缩放/平移增强变换的系数范围
         scale_f_range: 进行内参增强变换的焦距乘数的范围
         pixel_aug: 像素级增强器对象（可选），由调用方创建和管理
+        perspective_normalization: 是否进行透视归一化（将bbox中心旋转到主点）
     """
     # pixel_aug由调用方传入，不在此创建
     B, T = batch_origin["joint_cam"].shape[:2]
     trans_2d_mat = torch.eye(3, device=device).float()[None, None, :].expand(B, T, -1, -1)
 
-    if not augmentation_flag:
+    correction_rot_mat = None
+
+    if not augmentation_flag and not perspective_normalization:
         # 数据规整
         # imgs_path, flip
         imgs_path: List[List[str]] = batch_origin["imgs_path"]
@@ -352,43 +454,67 @@ def preprocess_batch(
         focal: torch.Tensor = batch_origin["focal"].to(device)  # [B,T,2]
         princpt: torch.Tensor = batch_origin["princpt"].to(device)  # [B,T,2]
 
-        # 数据增强参数
-        rad = torch.rand(B, 1, device=device).expand(-1, T) * 2 * torch.pi  # [B, T]
-        # [B, T], [B, T]
-        scale_z = (
-            torch.rand(B, 1, device=device).expand(-1, T)
-            * (scale_z_range[1] - scale_z_range[0])
-            + scale_z_range[0]
-        )
-        scale_f = (
-            torch.rand(B, 1, device=device).expand(-1, T)
-            * (scale_f_range[1] - scale_f_range[0])
-            + scale_f_range[0]
-        )
-        focal_new = focal * scale_f[:, :, None]
-        princpt_noise = torch.randn(B, 1, 2, device=device).expand(-1, T, -1)
-        princpt_noise = princpt_noise * torch.norm(princpt, dim=-1, keepdim=True) * 0.1111111
-        princpt_new = princpt_noise + princpt
-        persp_dir_rad = torch.rand(B, 1, device=device).expand(-1, T) * 2 * torch.pi
-        persp_rot_rad = torch.rand(B, 1, device=device).expand(-1, T) * persp_rot_max
-        persp_axis_angle = (
-            torch.stack(
-                [
-                    torch.cos(persp_dir_rad),
-                    torch.sin(persp_dir_rad),
-                    torch.zeros(B, T, device=device),
-                ],
-                dim=-1,
-            )
-            * persp_rot_rad[..., None]
-        )
+        # === perspective normalization（独立于 augmentation） ===
+        if perspective_normalization:
+            hand_bbox_orig: torch.Tensor = batch_origin["hand_bbox"].to(device)
+            correction_rot_mat = compute_perspective_normalization_rotation(
+                hand_bbox_orig, focal, princpt
+            )  # [B,T,3,3]，基于原始内参
 
-        # 获得数据增强变换矩阵
+        # === 增强参数 ===
+        if augmentation_flag:
+            rad = torch.rand(B, 1, device=device).expand(-1, T) * 2 * torch.pi  # [B, T]
+            # [B, T], [B, T]
+            scale_z = (
+                torch.rand(B, 1, device=device).expand(-1, T)
+                * (scale_z_range[1] - scale_z_range[0])
+                + scale_z_range[0]
+            )
+            scale_f = (
+                torch.rand(B, 1, device=device).expand(-1, T)
+                * (scale_f_range[1] - scale_f_range[0])
+                + scale_f_range[0]
+            )
+            focal_new = focal * scale_f[:, :, None]
+            princpt_noise = torch.randn(B, 1, 2, device=device).expand(-1, T, -1)
+            princpt_noise = princpt_noise * torch.norm(princpt, dim=-1, keepdim=True) * 0.1111111
+            princpt_new = princpt_noise + princpt
+            persp_dir_rad = torch.rand(B, 1, device=device).expand(-1, T) * 2 * torch.pi
+            persp_rot_rad = torch.rand(B, 1, device=device).expand(-1, T) * persp_rot_max
+            persp_axis_angle = (
+                torch.stack(
+                    [
+                        torch.cos(persp_dir_rad),
+                        torch.sin(persp_dir_rad),
+                        torch.zeros(B, T, device=device),
+                    ],
+                    dim=-1,
+                )
+                * persp_rot_rad[..., None]
+            )
+            # 归一化与透视增强互斥
+            if perspective_normalization:
+                persp_axis_angle = torch.zeros(B, T, 3, device=device)
+        else:
+            # 不做增强 → identity 参数（仅 perspective_normalization 走此路径）
+            rad = torch.zeros(B, T, device=device)
+            scale_z = torch.ones(B, T, device=device)
+            focal_new = focal.clone()
+            princpt_new = princpt.clone()
+            persp_axis_angle = torch.zeros(B, T, 3, device=device)
+
+        # === 组合变换矩阵 ===
         # [B,T,3,3]
         trans_3d_mat = get_trans_3d_mat(rad, scale_z, persp_axis_angle)
         trans_2d_mat = get_trans_2d_mat(
             rad, 1 / scale_z, focal, princpt, focal_new, princpt_new, persp_axis_angle
         )
+        # 归一化旋转右乘
+        if correction_rot_mat is not None:
+            trans_3d_mat = trans_3d_mat @ correction_rot_mat
+            old_intr, old_intr_inv = build_intrinsic_matrices(focal, princpt)
+            correction_2d = old_intr @ correction_rot_mat @ old_intr_inv
+            trans_2d_mat = trans_2d_mat @ correction_2d
 
         # 带数据增强的数据规整
         # imgs_path, flip
@@ -409,17 +535,19 @@ def preprocess_batch(
         mano_pose_root = KC.axis_angle_to_rotation_matrix(
             mano_pose[:, :, :3].reshape(-1, 3)
         )  # [B*T,3,3]
-        # R_z: Z轴旋转
+        # R_z: Z轴旋转（aug_flag=False 时 rad=0，R_z=I）
         root_rot_mat = KC.axis_angle_to_rotation_matrix(
             (torch.Tensor([[[0, 0, 1]]]).to(device) * rad[:, :, None]).reshape(-1, 3)
         )  # [B*T,3,3]
-        # R_persp: 透视旋转增强（trans_3d_mat 包含 R_persp @ R_z_scale，
-        # MANO root 需要匹配旋转部分 R_persp @ R_z，不含 Z scale）
-        if persp_rot_max > 0:
+        # R_corr: 透视归一化旋转（右乘，最先执行）
+        if correction_rot_mat is not None:
+            root_rot_mat = root_rot_mat @ correction_rot_mat.reshape(-1, 3, 3)
+        # R_persp: 透视旋转增强（归一化启用时已被置零，双重保险跳过）
+        if persp_rot_max > 0 and not perspective_normalization:
             persp_rot_mat = KC.axis_angle_to_rotation_matrix(
                 persp_axis_angle.reshape(-1, 3)
             )  # [B*T,3,3]
-            root_rot_mat = persp_rot_mat @ root_rot_mat  # R_persp @ R_z
+            root_rot_mat = persp_rot_mat @ root_rot_mat  # R_persp @ R_z [@ R_corr]
         mano_pose_root = KC.rotation_matrix_to_axis_angle(
             root_rot_mat @ mano_pose_root
         ).reshape(B, T, 3)  # [B,T,3]
@@ -553,4 +681,4 @@ def preprocess_batch(
         "timestamp": timestamp,
         "focal": focal,
         "princpt": princpt
-    }, trans_2d_mat
+    }, trans_2d_mat, correction_rot_mat

@@ -41,6 +41,7 @@ TRAIN:
   scale_z_range: [0.9, 1.1]  # 保持不变，数据标注有问题
   scale_f_range: [0.9, 1.1]  # 启用focal length增强
   persp_rot_max: 0.0 # pi/12  # 保持不变，数据标注有问题
+  perspective_normalization: false  # true=透视归一化(bbox中心旋转到主点), false=原始方式
   augmentation: ${augmentation}  # 引用顶层augmentation配置组
 
 DATA:

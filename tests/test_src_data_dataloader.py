@@ -491,7 +491,7 @@ def test_dataloader2():
     for i, batch_ in enumerate(tqdm.tqdm(loader, ncols=70)):
         batch = copy.deepcopy(batch_)
         # 验证数据规整的正确性
-        batch2, trans_2d_mat = preprocess_batch(
+        batch2, trans_2d_mat, _ = preprocess_batch(
             batch,
             [256, 256],
             1.1,
@@ -500,7 +500,9 @@ def test_dataloader2():
             torch.pi / 6,
             "3",
             True,
-            torch.device("cuda:0")
+            torch.device("cuda:0"),
+            None,
+            True,
         )
         os.makedirs(f"tests/temp_processed_{i}", exist_ok=True)
         verify_batch(
