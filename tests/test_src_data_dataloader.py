@@ -496,12 +496,12 @@ def test_dataloader2():
             True,
             torch.device("cuda:0")
         )
-        os.makedirs(f"test/temp_processed_{i}", exist_ok=True)
+        os.makedirs(f"tests/temp_processed_{i}", exist_ok=True)
         verify_batch(
             batch2,
             trans_2d_mat,
-            f"test/temp_processed_{i}",
-            "/data_1/datasets_temp/InterHand2.6M_5fps_batch1/images/train",
+            f"tests/temp_processed_{i}",
+            "/mnt/qnap/data/datasets/InterHand2.6M_5fps_batch1/images/train",
             bx,
             tx,
         )
@@ -512,7 +512,7 @@ def test_dataloader2():
             break
 
     # 直接验证数据满足一致性
-    verify_origin_data(batch_, "test/temp_origin", bx, tx)
+    verify_origin_data(batch_, "tests/temp_origin", bx, tx)
 
 
 def test_dataloader3():
@@ -554,5 +554,5 @@ def test_dataloader3():
 
 
 if __name__ == "__main__":
-    # test_dataloader2()
-    test_dataloader3()
+    test_dataloader2()
+    # test_dataloader3()

@@ -409,9 +409,17 @@ def preprocess_batch(
         mano_pose_root = KC.axis_angle_to_rotation_matrix(
             mano_pose[:, :, :3].reshape(-1, 3)
         )  # [B*T,3,3]
+        # R_z: Z轴旋转
         root_rot_mat = KC.axis_angle_to_rotation_matrix(
             (torch.Tensor([[[0, 0, 1]]]).to(device) * rad[:, :, None]).reshape(-1, 3)
         )  # [B*T,3,3]
+        # R_persp: 透视旋转增强（trans_3d_mat 包含 R_persp @ R_z_scale，
+        # MANO root 需要匹配旋转部分 R_persp @ R_z，不含 Z scale）
+        if persp_rot_max > 0:
+            persp_rot_mat = KC.axis_angle_to_rotation_matrix(
+                persp_axis_angle.reshape(-1, 3)
+            )  # [B*T,3,3]
+            root_rot_mat = persp_rot_mat @ root_rot_mat  # R_persp @ R_z
         mano_pose_root = KC.rotation_matrix_to_axis_angle(
             root_rot_mat @ mano_pose_root
         ).reshape(B, T, 3)  # [B,T,3]
