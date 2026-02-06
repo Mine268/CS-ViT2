@@ -476,7 +476,7 @@ def test_dataloader2():
             # "/mnt/qnap/data/datasets/webdatasets/HO3D_v3/evaluation/*.tar"
             "/mnt/qnap/data/datasets/webdatasets/HOT3D/train/*",
         ),
-        num_frames=7,
+        num_frames=1,
         stride=1,
         batch_size=32,
         num_workers=2,

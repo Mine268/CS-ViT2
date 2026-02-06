@@ -587,21 +587,25 @@ def preprocess_batch(
         joint_hand_bbox: torch.Tensor = joint_img - hand_bbox[:, :, None, :2]  # [B,T,J,2]
         joint_patch_bbox: torch.Tensor = joint_img - patch_bbox[:, :, None, :2]  # [B,T,J,2]
         # 4. 利用计算的patch_bbox进行采样
-        patch_bbox_corner = torch.stack([  # [B,T,4,2]
-            torch.stack([patch_bbox[:, :, 0], patch_bbox[:, :, 1]], dim=-1),
-            torch.stack([patch_bbox[:, :, 2], patch_bbox[:, :, 1]], dim=-1),
-            torch.stack([patch_bbox[:, :, 2], patch_bbox[:, :, 3]], dim=-1),
-            torch.stack([patch_bbox[:, :, 0], patch_bbox[:, :, 3]], dim=-1),
-        ], dim=2)
-        patch_bbox_corner_orig = apply_perspective_to_points(
-            trans_2d_mat.inverse(), patch_bbox_corner
-        )
+        # 使用 warp_perspective + 组合 homography，避免 crop_and_resize
+        # 对高畸变四边形的数值不稳定问题
+        # A_inv 将 warped 空间的 patch_bbox 映射到 [0, patch_w] x [0, patch_h]
+        # M_crop = A_inv @ trans_2d_mat: 原图 → warped → patch
+        sx = (patch_bbox[..., 2] - patch_bbox[..., 0]) / patch_size[1]  # [B,T]
+        sy = (patch_bbox[..., 3] - patch_bbox[..., 1]) / patch_size[0]  # [B,T]
+        A_inv = torch.zeros(B, T, 3, 3, device=device, dtype=torch.float32)
+        A_inv[..., 0, 0] = 1.0 / sx
+        A_inv[..., 1, 1] = 1.0 / sy
+        A_inv[..., 0, 2] = -patch_bbox[..., 0] / sx
+        A_inv[..., 1, 2] = -patch_bbox[..., 1] / sy
+        A_inv[..., 2, 2] = 1.0
+        M_crop = A_inv @ trans_2d_mat  # [B,T,3,3]
         patches = []
         for bx, img_orig_tensor in enumerate(batch_origin["imgs"]):
-            patch = KT.crop_and_resize(
+            patch = KT.warp_perspective(
                 img_orig_tensor.to(device).float() / 255,
-                patch_bbox_corner_orig[bx],
-                patch_size,
+                M_crop[bx],
+                tuple(patch_size),
                 mode="bilinear"
             )
             patches.append(patch)
