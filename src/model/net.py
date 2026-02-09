@@ -6,6 +6,7 @@ import numpy as np
 import torch.nn as nn
 import kornia
 import smplx
+from safetensors.torch import load_file
 
 from .loss import *
 from .module import *
@@ -22,6 +23,7 @@ class PoseNet(nn.Module):
     def __init__(
         self,
         stage: Stage,
+        stage1_weight_path: Optional[str],
 
         backbone_str: str,
         img_size: Optional[int],
@@ -70,7 +72,9 @@ class PoseNet(nn.Module):
         norm_by_hand: bool,
     ):
         super(PoseNet, self).__init__()
-        self.stage = stage
+
+        self.stage = PoseNet.Stage(stage)
+
         # Image encoder
         backbone_kwargs = default(backbone_kwargs, {})
         self.backbone = ViTBackbone(
@@ -140,37 +144,15 @@ class PoseNet(nn.Module):
             norm_list = norm_stats["norm_list"].flatten().tolist()
             self.norm_idx = [HAND_JOINTS_ORDER.index(x) for x in norm_list]
 
-        # Temporal encoder
-        # self.pose_temporal_encoder = TemporalEncoder(
-        #     dim=self.hidden_size,
-        #     num_head=num_temporal_head,
-        #     num_layer=num_temporal_layer,
-        #     dropout=prob_hf_dropout,
-        #     trope_scalar=trope_scalar,
-        #     zero_linear=zero_linear,
-        # )
-        # self.shape_temporal_encoder = TemporalEncoder(
-        #     dim=self.hidden_size,
-        #     num_head=num_temporal_head,
-        #     num_layer=num_temporal_layer,
-        #     dropout=prob_hf_dropout,
-        #     trope_scalar=trope_scalar,
-        #     zero_linear=zero_linear,
-        # )
-        # self.trans_temporal_encoder = TemporalEncoder(
-        #     dim=self.hidden_size,
-        #     num_head=num_temporal_head,
-        #     num_layer=num_temporal_layer,
-        #     dropout=prob_hf_dropout,
-        #     trope_scalar=trope_scalar,
-        #     zero_linear=zero_linear,
-        # )
-
-        # MANO detokenizer
-        # self.mano_detokenizer = MANOPoseDetokenizer(
-        #     dim=self.hidden_size,
-        #     joint_rep_type=detok_joint_type
-        # )
+        # temporal encoder
+        self.temporal_refiner = TemporalEncoder(
+            dim=self.hidden_size,
+            num_head=num_temporal_head,
+            num_layer=num_temporal_layer,
+            dropout=prob_handec_dropout,
+            trope_scalar=trope_scalar,
+            zero_linear=zero_linear,
+        )
 
         # Loss
         self.supervise_global = supervise_global
@@ -192,6 +174,75 @@ class PoseNet(nn.Module):
 
         # train
         self.freeze_backbone = freeze_backbone
+
+        if self.stage == PoseNet.Stage.STAGE2 and stage1_weight_path is not None:
+            self.load_pretrained(stage1_weight_path)
+
+    def load_pretrained(self, path: str):
+        """从 checkpoint 目录或文件加载预训练权重
+
+        支持路径格式：checkpoint/date/run/checkpoints/checkpoint-9000
+
+        Args:
+            path: checkpoint 目录或权重文件路径
+
+        Returns:
+            None
+
+        Note:
+            使用 strict=False 允许部分加载（Stage 2 有新增的 temporal_refiner）
+        """
+        import os
+        from accelerate.logging import get_logger
+
+        logger = get_logger(__name__)
+
+        # 1. 确定实际权重文件路径
+        # 路径是目录，尝试加载标准 Accelerate checkpoint
+        model_path = os.path.join(path, "model.safetensors")
+        logger.info(f"Loading pretrained weights from directory: {model_path}")
+
+        # 2. 加载权重
+        state_dict = load_file(model_path)
+        logger.info("Loaded weights using safetensors format")
+
+        missing, unexpected = self.load_state_dict(state_dict, strict=False)
+
+        # 3. 记录加载结果
+        if len(missing) > 0:
+            logger.warning(
+                f"Missing keys when loading pretrained weights ({len(missing)} keys):\n"
+                f"{missing[:10]}{'...' if len(missing) > 10 else ''}"
+            )
+        if len(unexpected) > 0:
+            logger.warning(
+                f"Unexpected keys when loading pretrained weights ({len(unexpected)} keys):\n"
+                f"{unexpected[:10]}{'...' if len(unexpected) > 10 else ''}"
+            )
+
+        # 4. 验证关键模块是否成功加载（Stage 2 特有逻辑）
+        if self.stage == PoseNet.Stage.STAGE2:
+            spatial_keys = [
+                k
+                for k in state_dict.keys()
+                if any(
+                    prefix in k
+                    for prefix in ["backbone.", "persp_info_embedder.", "handec."]
+                )
+            ]
+            loaded_spatial_keys = [k for k in spatial_keys if k not in missing]
+            logger.info(
+                f"Stage 2: Loaded {len(loaded_spatial_keys)}/{len(spatial_keys)} spatial module parameters"
+            )
+
+            # temporal_refiner 应该在 missing keys 中（预期行为）
+            temporal_missing = [k for k in missing if "temporal_refiner" in k]
+            if len(temporal_missing) > 0:
+                logger.info(
+                    f"Stage 2: temporal_refiner not in checkpoint (expected, will be randomly initialized)"
+                )
+
+        logger.info("Pretrained weights loaded successfully")
 
     def get_hand_norm_scale(self, j3d: torch.Tensor, valid: torch.Tensor):
         """
@@ -228,11 +279,13 @@ class PoseNet(nn.Module):
         # extract hand param
         # [b,d], [b,10], [b,3]
         # [b,n], hm_x, hm_y, hm_z
-        (pred_hand_pose, pred_shape, pred_trans), pred_log_heatmaps = self.handec(feats)
+        (pred_hand_pose, pred_shape, pred_trans), pred_log_heatmaps, pred_tokens = (
+            self.handec(feats)
+        )
         if self.supervise_heatmap:
             pred_trans.detach()
 
-        return (pred_hand_pose, pred_shape, pred_trans), pred_log_heatmaps
+        return (pred_hand_pose, pred_shape, pred_trans), pred_log_heatmaps, pred_tokens
 
     def predict_mano_param(
         self,
@@ -263,44 +316,39 @@ class PoseNet(nn.Module):
             [img, bbox, focal, princpt]
         )
 
-        # spatial encoding
-        (pose, shape, trans), log_heatmaps = self.decode_hand_param(
-            img=img,
-            bbox=bbox,
-            focal=focal,
-            princpt=princpt,
-        )
+        if self.stage == PoseNet.Stage.STAGE1:
+            (pose, shape, trans), log_heatmaps, _ = self.decode_hand_param(
+                img=img,
+                bbox=bbox,
+                focal=focal,
+                princpt=princpt,
+            )
+        elif self.stage == PoseNet.Stage.STAGE2:
+            _, _, tokens_out = self.decode_hand_param( # repeat for readibility
+                img=img,
+                bbox=bbox,
+                focal=focal,
+                princpt=princpt,
+            ) # [(b*t),d]
+            # [b,t,d]
+            tokens_out = eps.rearrange(tokens_out, "(b t) d -> b t d", t=num_frame)
+            tokens_out = self.temporal_refiner(tokens_out, timestamp)
 
-        # if self.joint_rep_type == "6d":
-        #     pose = eps.rearrange(pose, "b (j d) -> (b j) d", j=MANO_JOINT_COUNT)
-        #     pose = rotation6d_to_rotation_matrix(pose) # [b,3,3]
-        #     pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(pose)
-        #     pose = eps.rearrange(eps, "(b j) d -> b (j d)", j=MANO_JOINT_COUNT)
-        # elif self.joint_rep_type == "3":
-        #     pass
-        # elif self.joint_rep_type == "quat":
-        #     pose = eps.rearrange(pose, "b (j d) -> (b j) d", j=MANO_JOINT_COUNT)
-        #     pose = kornia.geometry.conversions.quaternion_to_axis_angle(pose) # [b,4]
-        #     pose = kornia.geometry.conversions.rotation_matrix_to_axis_angle(pose)
-        #     pose = eps.rearrange(eps, "(b j) d -> b (j d)", j=MANO_JOINT_COUNT)
-        # else:
-        #     raise NotImplementedError
+            (pose, shape, trans), log_heatmaps = self.handec.decode_token(
+                eps.rearrange(tokens_out, "b t d -> (b t) d")
+            )
 
-        # temporal decoding
+        # 统一 reshape：Stage 1 和 Stage 2 都输出 [b, 1, d]
         pose, shape, trans = map(
-            lambda t: eps.rearrange(t, "(b t) d -> b t d", t=num_frame),
+            lambda t: eps.rearrange(t, "(b t) d -> b t d", t=1),
             [pose, shape, trans]
         )
         log_heatmaps = tuple(
             map(
-                lambda t: eps.rearrange(t, "(b t) d -> b t d", t=num_frame),
+                lambda t: eps.rearrange(t, "(b t) d -> b t d", t=1),
                 log_heatmaps,
             )
         )
-        # if self.stage == PoseNet.Stage.STAGE2:
-        #     pose_token = pose_token + self.pose_temporal_encoder(pose_token, timestamp)
-        #     shape_token = shape_token + self.shape_temporal_encoder(shape_token, timestamp)
-        #     trans_token = trans_token + self.trans_temporal_encoder(trans_token, timestamp)
 
         return pose, shape, trans, log_heatmaps
 
@@ -370,16 +418,16 @@ class PoseNet(nn.Module):
 
         # 3. micro metric
         metric_state = self.metric_meter(
-            batch["joint_cam"],
-            batch["joint_cam"] - batch["joint_cam"][:, :, :1],
+            batch["joint_cam"][:, -1:],
+            batch["joint_cam"][:, -1:] - batch["joint_cam"][:, -1:, :1],
             result["verts_cam_gt"],
             result["verts_rel_gt"],
             result["joint_cam_pred"],
             result["joint_rel_pred"],
             result["verts_cam_pred"],
             result["verts_rel_pred"],
-            batch["mano_valid"],
-            batch["joint_valid"],
+            batch["mano_valid"][:, -1:],
+            batch["joint_valid"][:, -1:],
             result["norm_valid_gt"],
         )
 
@@ -405,54 +453,93 @@ class PoseNet(nn.Module):
             self.handec.parameters(),
         )
 
+    def get_optim_param_dict(self, lr: float, backbone_lr: Optional[float]):
+        ret = []
+        if self.stage == PoseNet.Stage.STAGE1:
+            ret.append(
+                {
+                    "params": filter(
+                        lambda p: p.requires_grad,
+                        itertools.chain(
+                            self.persp_info_embedder.parameters(),
+                            self.handec.parameters(),
+                        ),
+                    ),
+                    "lr": lr
+                }
+            )
+            if backbone_lr is not None:
+                ret.append(
+                    {
+                        "params": filter(
+                            lambda p: p.requires_grad, self.backbone.parameters()
+                        ),
+                        "lr": backbone_lr,
+                    }
+                )
+        elif self.stage == PoseNet.Stage.STAGE2:
+            ret.append(
+                {
+                    "params": filter(
+                        lambda p: p.requires_grad, self.temporal_refiner.parameters()
+                    ),
+                    "lr": lr,
+                }
+            )
+
+        return ret
+
     def get_norm_idx(self):
         return self.norm_idx
 
     def set_dropout_rate(self, dropout_rate: float):
-        """
-        动态设置HandDecoder中所有Dropout层的dropout率
+        """动态设置 HandDecoder 和 TemporalEncoder 中所有 Dropout 层的 dropout 率
+
+        使用通用的模块遍历来修改所有 nn.Dropout 层，支持：
+        - HandDecoder (TransformerCrossAttn)
+        - TemporalEncoder (TRoPETransformerCrossAttn)
 
         用于实现渐进式dropout策略：训练早期使用低dropout率（或0），
         训练后期逐步提升dropout率以增强泛化性。
 
         Args:
-            dropout_rate: 新的dropout率，范围[0.0, 1.0]
+            dropout_rate: 新的 dropout 率，范围 [0.0, 1.0]
+
+        Raises:
+            ValueError: 如果 dropout_rate 不在有效范围内
 
         Examples:
             >>> net.set_dropout_rate(0.0)  # 训练早期禁用dropout
             >>> net.set_dropout_rate(0.1)  # 训练后期启用dropout
         """
+        # 校验输入范围
         if not (0.0 <= dropout_rate <= 1.0):
-            raise ValueError(f"dropout_rate must be in [0.0, 1.0], got {dropout_rate}")
+            raise ValueError(
+                f"dropout_rate must be in range [0.0, 1.0], got {dropout_rate}"
+            )
 
-        # 更新HandDecoder的transformer中所有dropout层
-        # 注意：TransformerDecoder包含一个内部的TransformerCrossAttn
-        if hasattr(self.handec, "transformer"):
-            transformer_decoder = self.handec.transformer
-            # TransformerDecoder.transformer是真正的TransformerCrossAttn
-            if hasattr(transformer_decoder, "transformer") and hasattr(
-                transformer_decoder.transformer, "layers"
-            ):
-                for layer_modules in transformer_decoder.transformer.layers:
-                    for wrapped_module in layer_modules:
-                        # PreNorm包装的模块，需要访问内部的fn
-                        if hasattr(wrapped_module, "fn"):
-                            inner_module = wrapped_module.fn
-                            # 更新Attention/CrossAttention中的dropout
-                            if hasattr(inner_module, "dropout") and isinstance(
-                                inner_module.dropout, nn.Dropout
-                            ):
-                                inner_module.dropout.p = dropout_rate
-                            # 更新FeedForward中的dropout（通常有两个）
-                            if hasattr(inner_module, "net"):
-                                for sub_module in inner_module.net:
-                                    if isinstance(sub_module, nn.Dropout):
-                                        sub_module.p = dropout_rate
+        # 修改 HandDecoder 中的所有 Dropout 层
+        for module in self.handec.modules():
+            if isinstance(module, nn.Dropout):
+                module.p = dropout_rate
+
+        # 修改 TemporalEncoder 中的所有 Dropout 层（如果存在）
+        if hasattr(self, "temporal_refiner") and self.temporal_refiner is not None:
+            for module in self.temporal_refiner.modules():
+                if isinstance(module, nn.Dropout):
+                    module.p = dropout_rate
 
     @override
     def train(self, mode=True):
-        super(PoseNet, self).train(mode)
-        self.backbone.train(mode and not self.freeze_backbone)
+        if self.stage == PoseNet.Stage.STAGE1:
+            super(PoseNet, self).train(mode)
+            self.backbone.train(mode and not self.freeze_backbone)
+        elif self.stage == PoseNet.Stage.STAGE2:
+            super(PoseNet, self).train(mode)
+            self.backbone.train(False)
+            self.persp_info_embedder.train(False)
+            self.handec.train(False)
+            self.temporal_refiner.train(mode)
 
     @override
     def eval(self):

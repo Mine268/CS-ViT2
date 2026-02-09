@@ -17,7 +17,7 @@ CS-ViT2 is a **3D hand pose estimation** project using Vision Transformers for *
 - Hydra for configuration management
 - AIM for experiment tracking
 
-**Current Focus:** Stage 1 training - single image to hand pose prediction.
+**Current Focus:** Both Stage 1 (single-frame) and Stage 2 (temporal) training are supported.
 
 ## Development Commands
 
@@ -30,21 +30,26 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Training (Stage 1 - Single Frame)
+### Training
 ```bash
-# Train with default DINOv2-large backbone (recommended)
-python script/stage1.py --config-name=stage1-dino_large
+# Stage 1 - Single Frame Training (recommended first)
+python script/train.py --config-name=stage1-dino_large
+
+# Stage 2 - Temporal Training (requires Stage 1 checkpoint)
+python script/train.py --config-name=stage2-dino_large
 
 # Train with different backbone configurations
-python script/stage1.py --config-name=default_stage1-mae-large
-python script/stage1.py --config-name=default_stage1-dino-large
+python script/train.py --config-name=default_stage1-mae-large
+python script/train.py --config-name=default_stage1-dino-large
 
 # Resume from checkpoint
-python script/stage1.py --config-name=stage1-dino_large GENERAL.resume_path=checkpoint/07-01-2026/checkpoints/checkpoint-30000
+python script/train.py --config-name=stage1-dino_large GENERAL.resume_path=checkpoint/07-01-2026/checkpoints/checkpoint-30000
 
 # Multi-GPU training (uses Accelerate DDP automatically)
-accelerate launch script/stage1.py --config-name=stage1-dino_large
+accelerate launch script/train.py --config-name=stage1-dino_large
 ```
+
+**Note:** The training script was renamed from `script/stage1.py` to `script/train.py` to support both Stage 1 and Stage 2 in a unified manner.
 
 ### Testing
 ```bash
@@ -64,7 +69,7 @@ pytest tests/ -v -s
 ### Configuration Override
 ```bash
 # Override training parameters via command line
-python script/stage1.py --config-name=stage1-dino_large \
+python script/train.py --config-name=stage1-dino_large \
     TRAIN.lr=5e-5 \
     TRAIN.sample_per_device=16 \
     GENERAL.total_step=50000
@@ -72,14 +77,21 @@ python script/stage1.py --config-name=stage1-dino_large \
 
 ## Architecture Overview
 
-### Single-Frame Pose Estimation (Stage 1)
+### Two-Stage Training Architecture
 
-**Current Implementation:**
+#### Stage 1: Single-Frame Pose Estimation
 - Input: Single image [B, 1, 3, 224, 224]
 - Output: MANO parameters (pose, shape, translation) per frame
+- Trains: Backbone + PerspInfoEmbedder + HandDecoder
 - Focus: Accurate per-frame hand pose and shape estimation
 
-**Note:** Stage 2 (temporal sequence modeling) exists in the codebase but is not the current focus.
+#### Stage 2: Temporal Sequence Modeling
+- Input: Image sequence [B, T, 3, 224, 224] (T=7 frames)
+- Output: Refined MANO parameters for **last frame only** [B, 1, ...]
+- Trains: TemporalEncoder only (spatial modules frozen)
+- Focus: Temporal consistency and refinement using context from previous frames
+
+**Important:** Stage 2 only predicts the last frame after temporal fusion. See `docs/STAGE2_LAST_FRAME_ONLY_FIX.md` for implementation details.
 
 ### Core Components
 

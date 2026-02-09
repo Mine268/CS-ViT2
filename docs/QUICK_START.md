@@ -23,13 +23,16 @@ python -m tests.test_progressive_dropout
 
 ### 2. 启动训练
 ```bash
-# 使用默认配置（推荐）
-python script/stage1.py --config-name=stage1-dino_large
+# Stage 1 训练（使用默认配置，推荐）
+python script/train.py --config-name=stage1-dino_large
 
 # 或自定义参数
-python script/stage1.py --config-name=stage1-dino_large \
+python script/train.py --config-name=stage1-dino_large \
     GENERAL.dropout_warmup_step=8000 \
     MODEL.handec.dropout=0.15
+
+# Stage 2 训练（自动加载 Stage 1 权重）
+python script/train.py --config-name=stage2-dino_large
 ```
 
 ### 3. 监控训练
@@ -106,7 +109,7 @@ ls model/facebook/dinov2-large/
 ### 代码
 - `../src/utils/train_utils.py` - 工具函数
 - `../src/model/net.py` - 模型接口
-- `../script/stage1.py` - 训练脚本
+- `../script/train.py` - 统一的 Stage 1/2 训练脚本
 
 ### 测试
 - `../tests/test_progressive_dropout.py` - 测试脚本
@@ -160,7 +163,13 @@ Dropout率
 
 **准备就绪！开始训练:**
 ```bash
-python script/stage1.py --config-name=stage1-dino_large
+# Stage 1 训练
+python script/train.py --config-name=stage1-dino_large
+
+# Stage 2 训练（需要先完成 Stage 1）
+python script/train.py --config-name=stage2-dino_large
 ```
+
+**注**: `script/train.py` 是统一的训练脚本，支持 Stage 1 和 Stage 2。旧的 `script/stage1.py` 已重命名为 `train.py`。
 
 **GG**

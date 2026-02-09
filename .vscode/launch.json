@@ -41,14 +41,14 @@
             "name": "stage1",
             "type": "debugpy",
             "request": "launch",
-            "module": "script.stage1",
+            "module": "script.train",
             "console": "integratedTerminal",
             "args": [
                 "--config-name", "stage1-dino_large",
                 "AIM.server_url=.",
                 "GENERAL.description='debug run'",
                 "TRAIN.sample_per_device=32",
-                "TRAIN.perspective_normalization=true",
+                "GENERAL.resume_path=checkpoint/09-02-2026/16-29-57_stage1-dino_large/checkpoints/checkpoint-12000",
                 "augmentation=aggressive"
             ],
             "justMyCode": true,
@@ -56,7 +56,27 @@
                 "CUDA_VISIBLE_DEVICES": "0",
                 "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
             }
+        },
+
+        {
+            "name": "stage2",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "script.train",
+            "console": "integratedTerminal",
+            "args": [
+                "--config-name", "stage2-dino_large",
+                "AIM.server_url=.",
+                "GENERAL.description='debug run'",
+                "TRAIN.sample_per_device=4",
+            ],
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0",
+                "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
+            }
         }
+
 
     ]
 }

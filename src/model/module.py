@@ -624,18 +624,24 @@ class MANOTransformerDecoderHead(nn.Module):
             self.register_buffer("output_mean", mano_mean)
 
     def forward(self, x: torch.Tensor):
-        batch_size = x.shape[0]
+        token_out = self.encode_img(x)
+        (pred_hand_pose, pred_betas, pred_cam), pred_log_heatmaps = self.decode_token(token_out)
+        return (pred_hand_pose, pred_betas, pred_cam), pred_log_heatmaps, token_out
 
+    def encode_img(self, x: torch.Tensor):
+        batch_size = x.shape[0]
         # [b,d]
         init_hand_pose = self.init_hand_pose.expand(batch_size, -1)
         init_betas = self.init_betas.expand(batch_size, -1)
         init_cam = self.init_cam.expand(batch_size, -1)
-
         # [b,1,npose+10+3]
         token = torch.cat([init_hand_pose, init_betas, init_cam], dim=1)[:, None, :]
         token_out = self.transformer(token, context=x)
+        # [b,d]
         token_out = token_out.squeeze(1)
+        return token_out
 
+    def decode_token(self, token_out: torch.Tensor):
         pred_hand_pose = self.decpose(token_out) # + init_hand_pose
         pred_betas = self.decshape(token_out) # + init_betas
         pred_cam, pred_log_heatmaps = self.deccam(token_out) # + init_cam
@@ -670,7 +676,7 @@ class TemporalEncoder(nn.Module):
         self.dim = dim
         self.trope_scalar = trope_scalar
 
-        self.pe = TRotionalPositionEmbedding(self.dim)
+        # self.pe = TRotionalPositionEmbedding(self.dim)
         self.zero_linear = nn.Linear(self.dim, self.dim, bias=True)
         self.cross_attn = TRoPETransformerCrossAttn(
             dim=self.dim,

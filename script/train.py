@@ -94,6 +94,7 @@ def setup_dataloader(cfg: DictConfig):
 def setup_model(cfg: DictConfig):
     net = PoseNet(
         stage=cfg.MODEL.stage,
+        stage1_weight_path=cfg.MODEL.get("stage1_weight", None),
 
         backbone_str=cfg.MODEL.backbone.backbone_str,
         img_size=cfg.MODEL.img_size,
@@ -145,26 +146,11 @@ def setup_model(cfg: DictConfig):
     return net
 
 
-def setup_optim(cfg: DictConfig, net: nn.Module):
-    params = [
-        {
-            "params": filter(lambda p: p.requires_grad, net.get_regressor_params()),
-            "lr": cfg.TRAIN.lr,
-        },
-    ]
-    if cfg.TRAIN.backbone_lr is not None:
-        params.append(
-            {
-                "params": filter(lambda p: p.requires_grad, net.get_backbone_params()),
-                "lr": cfg.TRAIN.backbone_lr,
-            }
-        )
-
+def setup_optim(cfg: DictConfig, net: PoseNet):
     optim = torch.optim.AdamW(
-        params=params,
+        params=net.get_optim_param_dict(cfg.TRAIN.lr, cfg.TRAIN.backbone_lr),
         weight_decay=cfg.TRAIN.weight_decay,
     )
-
     return optim
 
 
@@ -553,10 +539,17 @@ def main(cfg: DictConfig):
             repo=cfg.AIM.server_url,
         )
         aim_run["hparams"] = OmegaConf.to_container(cfg, resolve=True)
-        logger.info(f'Aim run initialized in {cfg.AIM.server_url}')
+        logger.info(f'AIM run initialized in {cfg.AIM.server_url}')
+        logger.info(f'AIM run hash: {aim_run.hash}')
+        logger.info(f'AIM run URL: {cfg.AIM.server_url}/runs/{aim_run.hash}')
 
     broadcast_object_list(save_dir_obj, from_process=0)
     save_dir = save_dir_obj[0]
+
+    if accelerator.is_main_process:
+        config_save_path = osp.join(save_dir, f"config_{config_name}.yaml")
+        OmegaConf.save(cfg, config_save_path)
+        logger.info(f"Save config to {config_save_path}")
 
     accelerator.wait_for_everyone()
     logger.info(accelerator.state, main_process_only=False)
@@ -582,7 +575,7 @@ def main(cfg: DictConfig):
     resume_path = cfg.GENERAL.resume_path
 
     if resume_path is not None:
-        accelerator.load_state(resume_path)
+        accelerator.load_state(resume_path, strict=False)
         logger.info(f"Resumed training from {resume_path}")
 
         # 解析步数
