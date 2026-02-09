@@ -37,6 +37,7 @@ TRAIN:
   max_grad: 1.0
   weight_decay: 1e-4
   sample_per_device: 32
+  mixed_precision: "bf16"
   expansion_ratio: 2.0
   scale_z_range: [0.9, 1.1]  # 保持不变，数据标注有问题
   scale_f_range: [0.9, 1.1]  # 启用focal length增强

@@ -505,7 +505,7 @@ def main(cfg: DictConfig):
     timeout_kwargs = InitProcessGroupKwargs(timeout=datetime.timedelta(seconds=1800))
     accelerator = Accelerator(
         gradient_accumulation_steps=cfg.TRAIN.grad_accum_step,
-        mixed_precision=None,
+        mixed_precision=cfg.TRAIN.get("mixed_precision", None),
         kwargs_handlers=[ddp_kwargs, timeout_kwargs]
     )
 
