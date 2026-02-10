@@ -401,6 +401,97 @@ class PoseNet(nn.Module):
 
         return joint_rel, verts_rel
 
+    @torch.inference_mode()
+    def predict_full(
+        self,
+        img: torch.Tensor,
+        bbox: torch.Tensor,
+        focal: torch.Tensor,
+        princpt: torch.Tensor,
+        timestamp: Optional[torch.Tensor] = None,
+        joint_cam_gt: Optional[torch.Tensor] = None,
+        joint_valid_gt: Optional[torch.Tensor] = None,
+    ):
+        """
+        测试专用推理函数，返回完整的预测结果（包括原始 MANO 参数和 FK 结果）
+
+        **重要**：正确处理 norm_by_hand 逻辑，返回真实相机坐标系下的 joints/verts
+
+        Args:
+            img: [B, T, 3, H, W] 图像 patches
+            bbox: [B, T, 4] 手部 bounding box (xyxy格式)
+            focal: [B, T, 2] 相机焦距 (fx, fy)
+            princpt: [B, T, 2] 相机主点 (cx, cy)
+            timestamp: [B, T] 时间戳（可选，Stage 2 需要）
+            joint_cam_gt: [B, T, 21, 3] GT joints（可选，用于 norm_by_hand 反归一化）
+            joint_valid_gt: [B, T, 21] GT joint valid（可选，用于 norm_by_hand 反归一化）
+
+        Returns:
+            dict: {
+                "mano_pose_pred": [B, 1, 48],      # 最后一帧
+                "mano_shape_pred": [B, 1, 10],
+                "trans_pred": [B, 1, 3],           # 归一化的 trans（如果 norm_by_hand=true）
+                "trans_pred_denorm": [B, 1, 3],    # 反归一化的 trans（真实相机坐标）
+                "joint_cam_pred": [B, 1, 21, 3],   # 真实相机坐标系
+                "vert_cam_pred": [B, 1, 778, 3],   # 真实相机坐标系
+                "joint_rel_pred": [B, 1, 21, 3],   # 相对根关节坐标
+                "vert_rel_pred": [B, 1, 778, 3],   # 相对根关节坐标
+                "norm_scale": [B, 1],              # 手部大小（如果 norm_by_hand=true）
+                "norm_valid": [B, 1],              # norm_scale 是否有效
+            }
+        """
+        # 1. 获取原始 MANO 参数（复用 predict_mano_param）
+        pose_pred, shape_pred, trans_pred, _ = self.predict_mano_param(
+            img=img, bbox=bbox, focal=focal, princpt=princpt, timestamp=timestamp
+        )
+
+        # 2. FK（复用 mano_to_pose，参考 BundleLoss2 的逻辑）
+        # 注意：只对最后一帧进行 FK（与训练时一致）
+        joint_rel_pred, vert_rel_pred = self.mano_to_pose(pose_pred, shape_pred)
+
+        # 3. 处理 norm_by_hand 反归一化
+        trans_for_fk = trans_pred  # [B, 1, 3]
+
+        if not self.norm_by_hand:
+            trans_pred_denorm = trans_for_fk
+            norm_scale = torch.ones(
+                (trans_for_fk.shape[0], 1), device=trans_for_fk.device
+            )
+            norm_valid = torch.ones(
+                (trans_for_fk.shape[0], 1), device=trans_for_fk.device
+            )
+        else:
+            norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
+                joint_cam_gt[:, -1:], joint_valid_gt[:, -1:]
+            )
+            norm_scale_pred, _ = self.get_hand_norm_scale(
+                joint_rel_pred[:, -1:], torch.ones_like(joint_rel_pred[:, -1:])
+            )
+            norm_scale = ( # [b,1,1]
+                norm_valid_gt[:, -1:] * norm_scale_gt[..., None] +
+                (1 - norm_valid_gt[:, -1:]) * norm_scale_pred[..., None]
+            )
+            norm_valid = norm_valid_gt # [b,1]
+            # [b,1,3]
+            trans_pred_denorm = trans_for_fk * norm_scale
+
+        # 4. 转换到相机坐标系（使用反归一化后的 trans）
+        joint_cam_pred = joint_rel_pred + trans_pred_denorm[:, :, None, :]
+        vert_cam_pred = vert_rel_pred + trans_pred_denorm[:, :, None, :]
+
+        return {
+            "mano_pose_pred": pose_pred,
+            "mano_shape_pred": shape_pred,
+            "trans_pred": trans_pred,  # 原始输出（可能归一化）
+            "trans_pred_denorm": trans_pred_denorm,  # 反归一化后的 trans
+            "joint_cam_pred": joint_cam_pred,  # 真实相机坐标
+            "vert_cam_pred": vert_cam_pred,  # 真实相机坐标
+            "joint_rel_pred": joint_rel_pred,
+            "vert_rel_pred": vert_rel_pred,
+            "norm_scale": norm_scale,
+            "norm_valid": norm_valid,
+        }
+
     def forward(self, batch):
         # 1. forward
         pose_pred, shape_pred, trans_pred, log_hm_pred = self.predict_mano_param(

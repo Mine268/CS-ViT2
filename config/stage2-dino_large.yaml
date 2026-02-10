@@ -30,6 +30,16 @@ GENERAL:
   val_seed: 42  # 验证集固定seed，确保每次验证使用相同数据
   resume_path: null
 
+TEST:
+  output_dir: output/test_results
+  batch_size: 16        # 测试时的 batch size（可通过命令行覆盖）
+  save_format: hdf5     # 保存格式
+  compression: gzip     # HDF5 压缩方式
+  max_samples: null     # 限制样本数（调试用，null=全部）
+  vis_step: 100         # 可视化频率
+  enable_vis: true      # 是否启用可视化到 AIM
+  checkpoint_path: null # checkpoint 路径（必须通过命令行指定）
+
 TRAIN:
   lr: 1e-4
   backbone_lr: 1e-5
@@ -61,6 +71,9 @@ DATA:
     ]
     stride: 1
     max_val_step: 1000
+  test:
+    source: []  # 默认为空，通过命令行指定
+    stride: 1   # 测试时的帧采样步长
 
 MODEL:
   img_size: 224

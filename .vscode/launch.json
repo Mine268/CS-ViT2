@@ -75,8 +75,28 @@
                 "CUDA_VISIBLE_DEVICES": "0",
                 "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
             }
-        }
+        },
 
+        {
+            "name": "test1",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "script.test",
+            "console": "integratedTerminal",
+            "args": [
+                "--config-name", "stage1-dino_large",
+                "AIM.server_url=.",
+                "TEST.checkpoint_path=checkpoint/09-02-2026/16-29-57_stage1-dino_large/checkpoints/checkpoint-45000",
+                "TEST.max_samples=100",
+                "DATA.test.source=['/mnt/qnap/data/datasets/webdatasets/InterHand2.6M/test/*']",
+                "GENERAL.description='debug run'",
+            ],
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0",
+                "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
+            }
+        }
 
     ]
 }
