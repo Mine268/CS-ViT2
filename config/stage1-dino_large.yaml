@@ -121,3 +121,5 @@ LOSS:
   supervise_global: true
   supervise_heatmap: true
   heatmap_sigma: 0.09     # normalized by hand, 保持不变
+  reproj_loss_type: "robust_l1"   # 重投影loss类型: "l1" 或 "robust_l1"
+  reproj_loss_delta: 84.0         # RobustL1Loss阈值(像素), 基于训练log分析的95分位

@@ -345,20 +345,23 @@ class BundleLoss2(nn.Module):
         norm_idx: List[int],
         hm_centers: Optional[Tuple[torch.Tensor]],
         hm_sigma: float,
-        robust_reproj: bool = True,
-        robust_reproj_delta: float = 84.0,
+        reproj_loss_type: str = "robust_l1",
+        reproj_loss_delta: float = 84.0,
     ):
         super().__init__()
 
         self.mse = nn.MSELoss(reduction="none")
         self.l1 = nn.L1Loss(reduction="none")
 
-        # 鲁棒重投影loss
-        self.robust_reproj = robust_reproj
-        if robust_reproj:
-            self.reproj_loss_fn = RobustL1Loss(delta=robust_reproj_delta, reduction='none')
-        else:
+        # 动态选择重投影loss类型
+        self.reproj_loss_type = reproj_loss_type
+        if reproj_loss_type == "l1":
             self.reproj_loss_fn = self.l1
+        elif reproj_loss_type == "robust_l1":
+            self.reproj_loss_fn = RobustL1Loss(delta=reproj_loss_delta, reduction='none')
+        else:
+            raise ValueError(f"Unsupported reproj_loss_type: {reproj_loss_type}. "
+                           f"Supported types: ['l1', 'robust_l1']")
 
         self.lambda_theta = lambda_theta
         self.lambda_shape = lambda_shape

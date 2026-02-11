@@ -67,6 +67,8 @@ class PoseNet(nn.Module):
         lambda_rel: float,
         lambda_img: float,
         hm_sigma: float,
+        reproj_loss_type: str,
+        reproj_loss_delta: float,
 
         freeze_backbone: bool,
         norm_by_hand: bool,
@@ -169,8 +171,8 @@ class PoseNet(nn.Module):
             norm_idx=self.norm_idx if norm_by_hand else [],
             hm_centers=None if not supervise_heatmap else self.handec.get_centers(),
             hm_sigma=hm_sigma,
-            robust_reproj=True,           # 启用鲁棒重投影loss
-            robust_reproj_delta=84.0,     # 鲁棒阈值（基于训练log分析的95分位）
+            reproj_loss_type=reproj_loss_type,
+            reproj_loss_delta=reproj_loss_delta,
         )
         self.metric_meter = MetricMeter()
 

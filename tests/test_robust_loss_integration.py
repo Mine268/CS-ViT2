@@ -62,15 +62,15 @@ try:
         norm_idx=[0, 5, 9, 13, 17],
         hm_centers=None,
         hm_sigma=0.09,
-        robust_reproj=True,       # 启用鲁棒loss
-        robust_reproj_delta=84.0,
+        reproj_loss_type="robust_l1",
+        reproj_loss_delta=84.0,
     )
 
     print(f"✅ BundleLoss2初始化成功")
-    print(f"   - robust_reproj: {loss_fn.robust_reproj}")
+    print(f"   - reproj_loss_type: {loss_fn.reproj_loss_type}")
     print(f"   - reproj_loss_fn: {type(loss_fn.reproj_loss_fn).__name__}")
 
-    if loss_fn.robust_reproj:
+    if loss_fn.reproj_loss_type == "robust_l1":
         assert isinstance(loss_fn.reproj_loss_fn, RobustL1Loss), \
             "reproj_loss_fn应该是RobustL1Loss实例"
         print(f"   - delta: {loss_fn.reproj_loss_fn.delta}")
@@ -84,14 +84,15 @@ except Exception as e:
 # 测试4: 对比启用/禁用鲁棒loss的差异
 print("\n[4/4] 对比鲁棒loss效果...")
 try:
-    # 创建两个loss函数：一个启用鲁棒，一个禁用
+    # 创建两个loss函数：一个使用鲁棒loss，一个使用标准L1
     loss_fn_robust = BundleLoss2(
         lambda_theta=3.0, lambda_shape=3.0, lambda_trans=0.05,
         lambda_rel=0.012, lambda_img=0.002,
         supervise_global=True, supervise_heatmap=False,
         norm_by_hand=True, norm_idx=[0, 5, 9, 13, 17],
         hm_centers=None, hm_sigma=0.09,
-        robust_reproj=True, robust_reproj_delta=84.0,
+        reproj_loss_type="robust_l1",
+        reproj_loss_delta=84.0,
     )
 
     loss_fn_standard = BundleLoss2(
@@ -100,7 +101,7 @@ try:
         supervise_global=True, supervise_heatmap=False,
         norm_by_hand=True, norm_idx=[0, 5, 9, 13, 17],
         hm_centers=None, hm_sigma=0.09,
-        robust_reproj=False,  # 禁用鲁棒loss
+        reproj_loss_type="l1",
     )
 
     # 模拟重投影误差 [b, t, j, 2] = [1, 1, 5, 1]

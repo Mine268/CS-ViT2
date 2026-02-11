@@ -212,6 +212,8 @@ def setup_model(cfg: DictConfig):
         lambda_rel=cfg.LOSS.get("lambda_rel", 0.000305),
         lambda_img=cfg.LOSS.get("lambda_img", 0.00512),
         hm_sigma=cfg.LOSS.get("heatmap_sigma", 3),
+        reproj_loss_type=cfg.LOSS.get("reproj_loss_type", "robust_l1"),
+        reproj_loss_delta=cfg.LOSS.get("reproj_loss_delta", 84.0),
 
         freeze_backbone=cfg.TRAIN.backbone_lr is None,
         norm_by_hand=cfg.MODEL.get("norm_by_hand", False),
