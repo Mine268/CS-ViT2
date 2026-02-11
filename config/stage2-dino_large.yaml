@@ -51,7 +51,7 @@ TRAIN:
   expansion_ratio: 2.0
   scale_z_range: [0.9, 1.1]  # 保持不变，数据标注有问题
   scale_f_range: [0.9, 1.1]  # 启用focal length增强
-  persp_rot_max: 0.0 # pi/12  # 保持不变，数据标注有问题
+  persp_rot_max: 0.0 # pi/12
   perspective_normalization: false  # true=透视归一化(bbox中心旋转到主点), false=原始方式
   augmentation: ${augmentation}  # 引用顶层augmentation配置组
 
@@ -121,5 +121,5 @@ LOSS:
   supervise_global: true
   supervise_heatmap: true
   heatmap_sigma: 0.09     # normalized by hand, 保持不变
-  reproj_loss_type: "robust_l1"   # 重投影loss类型: "l1" 或 "robust_l1"
+  reproj_loss_type: "l1"   # 重投影loss类型: "l1" 或 "robust_l1"
   reproj_loss_delta: 84.0         # RobustL1Loss阈值(像素), 基于训练log分析的95分位

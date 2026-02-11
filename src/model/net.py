@@ -257,6 +257,10 @@ class PoseNet(nn.Module):
         """
         d = j3d[..., self.norm_idx[:-1], :] - j3d[..., self.norm_idx[1:], :]
         d = torch.sum(torch.sqrt(torch.sum(d ** 2, dim=-1)), dim=-1) # [...]
+
+        # 防止 norm_scale 过小（双重保护）
+        d = torch.clamp(d, min=NORM_SCALE_EPSILON)
+
         flag = torch.all(valid[:, :, self.norm_idx] > 0.5, dim=-1).float()
         return d, flag
 

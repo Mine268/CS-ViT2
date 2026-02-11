@@ -30,6 +30,19 @@
   - 设计原则
   - 文件清单
 
+- **[NORM_BY_HAND.md](NORM_BY_HAND.md)** - norm_by_hand 功能说明
+  - 归一化尺度计算原理
+  - 训练和推理逻辑
+  - 与 shape 的关系
+  - 与重投影 loss 的关联
+  - 潜在问题和注意事项
+
+- **[REPROJ_LOSS_CONFIG.md](REPROJ_LOSS_CONFIG.md)** - 重投影 loss 配置说明
+  - RobustL1Loss 实现
+  - 配置化 loss 类型选择
+  - Delta 参数建议
+  - 效果对比
+
 ### 更新日志
 - **[CHANGELOG_2026-02-10.md](CHANGELOG_2026-02-10.md)** - 2026-02-10 更新日志
   - Stage 2 致命 bug 修复总结
@@ -48,11 +61,30 @@
   - 根因分析和复现代码
   - Workaround 方案
 
+- **[PREDICT_FULL_NORM_BY_HAND_FIX.md](PREDICT_FULL_NORM_BY_HAND_FIX.md)** - predict_full() 反归一化逻辑修复
+  - norm_valid 标志检查
+  - 智能 Fallback 策略
+  - 逐样本混合处理
+  - 与训练逻辑一致性
+
+- **[NAN_TRAINING_FIX.md](NAN_TRAINING_FIX.md)** - 训练 NaN 问题修复
+  - norm_by_hand 除零问题
+  - epsilon 保护实现
+  - 数据异常诊断
+  - 修复验证方法
+
 - **[CENTER_CORRECTION_DESIGN.md](CENTER_CORRECTION_DESIGN.md)** - 透视归一化设计文档
 
 - **[WHY_MIXED_PRECISION_MATTERS.md](WHY_MIXED_PRECISION_MATTERS.md)** - 混合精度训练说明
 
 - **[ABLATION_EXPERIMENTS.md](ABLATION_EXPERIMENTS.md)** - 消融实验设计
+
+- **[TEST_SCRIPT_USAGE.md](TEST_SCRIPT_USAGE.md)** - 测试脚本使用说明
+  - 测试脚本功能介绍
+  - 使用方法和参数
+  - 输出格式和结果分析
+
+- **[THESIS_CHAPTER_SUMMARY.md](THESIS_CHAPTER_SUMMARY.md)** - 论文章节总结
 
 ## 📖 阅读顺序
 
@@ -91,10 +123,12 @@
 
 ## 📅 更新日期
 
-**最后更新**: 2026-02-10
+**最后更新**: 2026-02-11
 
 **重要更新**:
+- 2026-02-11: norm_by_hand 功能文档和重投影 loss 配置文档完善
 - 2026-02-10: Stage 2 "只预测最后一帧" bug 修复，脚本统一为 `train.py`
+- 2026-02-10: predict_full() 反归一化逻辑修复，重投影 loss 配置化
 - 2026-02-08: Kornia crop_and_resize bug 修复，透视变换优化
 - 2026-01-30: 渐进式 Dropout 训练优化
 

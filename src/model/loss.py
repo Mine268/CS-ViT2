@@ -6,6 +6,9 @@ import torch.nn as nn
 from ..utils.mano import *
 from ..utils.proj import *
 
+# 防止 norm_scale 除零的 epsilon 值（单位: mm）
+NORM_SCALE_EPSILON = 1e-6
+
 
 class RobustL1Loss(nn.Module):
     """
@@ -390,6 +393,10 @@ class BundleLoss2(nn.Module):
         """
         d = j3d[..., self.norm_idx[:-1], :] - j3d[..., self.norm_idx[1:], :]
         d = torch.sum(torch.sqrt(torch.sum(d ** 2, dim=-1)), dim=-1) # [...]
+
+        # 防止 norm_scale 过小（双重保护）
+        d = torch.clamp(d, min=NORM_SCALE_EPSILON)
+
         flag = torch.all(valid[:, :, self.norm_idx] > 0.5, dim=-1).float()
         return d, flag
 
@@ -451,7 +458,8 @@ class BundleLoss2(nn.Module):
         # get trans gt data
         trans_gt = batch["joint_cam"][:, -1:, 0] # [b,t,3]
         if self.norm_by_hand:
-            trans_gt = trans_gt / norm_scale_gt[..., None]
+            # 添加 epsilon 防止除零导致 NaN/Inf
+            trans_gt = trans_gt / (norm_scale_gt[..., None] + NORM_SCALE_EPSILON)
 
         # param loss
         loss_theta = self.l1(pose_pred, pose_gt) # [b,t,d]
@@ -477,7 +485,8 @@ class BundleLoss2(nn.Module):
 
         # 投影 loss（使用 scaled trans，避免修改原始 trans_pred）
         if self.norm_by_hand:
-            trans_pred_scaled = trans_pred * norm_scale_gt[..., None]
+            # 添加 epsilon 保持与归一化操作的对称性
+            trans_pred_scaled = trans_pred * (norm_scale_gt[..., None] + NORM_SCALE_EPSILON)
         else:
             trans_pred_scaled = trans_pred
 
