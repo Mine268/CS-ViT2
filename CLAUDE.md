@@ -298,3 +298,6 @@ Experiment tracking server configured at `AIM.server_url` in config:
 - 回答时不要谄媚，不要附和，客观分析
 - 中文回答
 - 运行之前激活我的环境`source .venv/bin/activate`
+- 测试相关的代码和输出放在tests/中
+- 分析使用的相关工具脚本放在tools/中
+- 不要再代码中使用emoji

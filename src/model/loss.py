@@ -7,6 +7,67 @@ from ..utils.mano import *
 from ..utils.proj import *
 
 
+class RobustL1Loss(nn.Module):
+    """
+    鲁棒L1损失函数
+
+    在delta范围内使用L1 loss (线性)，超出delta后使用对数衰减，梯度逐渐变弱。
+
+    数学表达式:
+        loss(x) = |x|,                                  if |x| < delta
+                  delta * (1 + log(1 + (|x|-delta)/delta)), if |x| >= delta
+
+    梯度:
+        grad(x) = sign(x),                              if |x| < delta
+                  sign(x) * delta/(delta + |x| - delta), if |x| >= delta
+                = sign(x) / (1 + (|x|-delta)/delta)
+
+    特性:
+    - 在delta内保持L1的线性特性，梯度为常数±1
+    - 超过delta后，梯度逐渐衰减为0，避免异常值主导训练
+    - 连续可导（在±delta处）
+
+    Args:
+        delta (float): 阈值，超过此值后启用鲁棒化。单位与loss相同（如像素）
+        reduction (str): 'none' | 'mean' | 'sum'
+    """
+    def __init__(self, delta: float = 100.0, reduction: str = 'none'):
+        super().__init__()
+        self.delta = delta
+        self.reduction = reduction
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            pred: [...] 预测值
+            target: [...] 目标值
+
+        Returns:
+            loss: [...] or scalar，取决于reduction
+        """
+        abs_diff = torch.abs(pred - target)
+
+        # 区域1: |x| < delta, 使用L1
+        inside_mask = abs_diff < self.delta
+        loss_l1 = abs_diff
+
+        # 区域2: |x| >= delta, 使用对数衰减
+        # 为了连续性，在delta处匹配
+        # loss(delta) = delta
+        # loss(delta + ε) = delta * (1 + log(1 + ε/delta))
+        outside_diff = abs_diff - self.delta
+        loss_log = self.delta * (1.0 + torch.log1p(outside_diff / self.delta))
+
+        loss = torch.where(inside_mask, loss_l1, loss_log)
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+
+
 def robust_masked_mean(loss: torch.Tensor, mask: torch.Tensor):
     """
     辅助函数：计算安全的加权平均值
@@ -284,11 +345,20 @@ class BundleLoss2(nn.Module):
         norm_idx: List[int],
         hm_centers: Optional[Tuple[torch.Tensor]],
         hm_sigma: float,
+        robust_reproj: bool = True,
+        robust_reproj_delta: float = 84.0,
     ):
         super().__init__()
 
         self.mse = nn.MSELoss(reduction="none")
         self.l1 = nn.L1Loss(reduction="none")
+
+        # 鲁棒重投影loss
+        self.robust_reproj = robust_reproj
+        if robust_reproj:
+            self.reproj_loss_fn = RobustL1Loss(delta=robust_reproj_delta, reduction='none')
+        else:
+            self.reproj_loss_fn = self.l1
 
         self.lambda_theta = lambda_theta
         self.lambda_shape = lambda_shape
@@ -416,7 +486,8 @@ class BundleLoss2(nn.Module):
         joint_img_pred = proj_points_3d(
             joint_cam_pred, batch["focal"][:, -1:], batch["princpt"][:, -1:]
         )
-        loss_joint_img = self.l1(joint_img_pred, joint_img_gt) # [b,1,j,2]
+        # 使用鲁棒loss计算重投影误差
+        loss_joint_img = self.reproj_loss_fn(joint_img_pred, joint_img_gt) # [b,1,j,2]
         loss_joint_img = torch.mean(
             loss_joint_img * joint_valid[..., None] * norm_valid_gt[..., None, None]
         )

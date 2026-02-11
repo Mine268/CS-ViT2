@@ -6,6 +6,7 @@ import glob
 import logging
 from rich.logging import RichHandler
 import datetime
+import json
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
@@ -29,6 +30,79 @@ from src.utils.train_utils import get_progressive_dropout
 
 logger = get_logger(__name__)
 save_dir = None
+
+
+def save_best_model(
+    accelerator: Accelerator,
+    output_dir: str,
+    global_step: int,
+    val_metrics: Dict[str, float],
+    config_name: str,
+):
+    """
+    保存最优模型及其元数据
+
+    Args:
+        accelerator: Accelerator 实例
+        output_dir: 输出目录 (checkpoint/<date>/<time>_<config>/)
+        global_step: 当前训练步数
+        val_metrics: 验证指标字典 (包含 micro_mpjpe 等)
+        config_name: 配置名称
+    """
+    if not accelerator.is_main_process:
+        return
+
+    best_model_dir = osp.join(output_dir, "best_model")
+
+    # 保存完整 state (模型 + 优化器 + 调度器)
+    accelerator.save_state(best_model_dir)
+
+    # 保存元数据
+    metadata = {
+        "step": global_step,
+        "config_name": config_name,
+        "timestamp": datetime.datetime.now().isoformat(),
+        **val_metrics  # 展开所有验证指标
+    }
+
+    metadata_path = osp.join(output_dir, "best_model_info.json")
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    logger.info(f"Best model metadata saved to {metadata_path}")
+
+
+def load_best_model_info(output_dir: str) -> Dict:
+    """
+    加载最优模型的元数据（如果存在）
+
+    Args:
+        output_dir: 输出目录
+
+    Returns:
+        包含最优模型信息的字典，如果不存在则返回默认值
+    """
+    metadata_path = osp.join(output_dir, "best_model_info.json")
+
+    if not osp.exists(metadata_path):
+        return {
+            "best_micro_mpjpe": float('inf'),
+            "step": 0,
+        }
+
+    try:
+        with open(metadata_path, 'r') as f:
+            data = json.load(f)
+            return {
+                "best_micro_mpjpe": data.get("micro_mpjpe", float('inf')),
+                "step": data.get("step", 0),
+            }
+    except (json.JSONDecodeError, IOError) as e:
+        logger.warning(f"Failed to load best model info: {e}")
+        return {
+            "best_micro_mpjpe": float('inf'),
+            "step": 0,
+        }
 
 
 def manage_checkpoints(output_dir, keep_last_n=3):
@@ -340,6 +414,23 @@ def train(
     device = accelerator.device
     global_step = start_step
 
+    # ===== 初始化最优模型追踪器 =====
+    best_mpjpe_info = {"best_micro_mpjpe": float('inf'), "step": 0}
+    if accelerator.is_main_process:
+        # 尝试从已有的 best_model_info.json 加载历史最优值
+        best_mpjpe_info = load_best_model_info(save_dir)
+        logger.info(
+            f"Best model tracker initialized: "
+            f"best_micro_mpjpe={best_mpjpe_info['best_micro_mpjpe']:.4f} "
+            f"at step {best_mpjpe_info['step']}"
+        )
+
+    # 将最优值广播到所有进程（多GPU训练）
+    best_mpjpe_obj = [best_mpjpe_info]
+    broadcast_object_list(best_mpjpe_obj, from_process=0)
+    best_mpjpe_info = best_mpjpe_obj[0]
+    # ===== 追踪器初始化结束 =====
+
     # 创建数据增强对象（训练时使用）
     from src.data.preprocess import PixelLevelAugmentation
     from omegaconf import OmegaConf
@@ -420,6 +511,47 @@ def train(
                     logger.info(f"validation finished.")
                     for k, v in val_result.items():
                         logger.info(f"{k}={v}")
+
+                    # ===== 检查是否需要保存最优模型 =====
+                    current_mpjpe = val_result.get("micro_mpjpe", float('inf'))
+
+                    if current_mpjpe < best_mpjpe_info["best_micro_mpjpe"]:
+                        # 发现新的最优值
+                        old_best = best_mpjpe_info["best_micro_mpjpe"]
+                        best_mpjpe_info["best_micro_mpjpe"] = current_mpjpe
+                        best_mpjpe_info["step"] = global_step
+
+                        # 打印醒目的日志
+                        logger.info(
+                            f"\n{'='*70}\n"
+                            f"NEW BEST MODEL FOUND!\n"
+                            f"   MPJPE improved: {old_best:.4f} mm -> {current_mpjpe:.4f} mm\n"
+                            f"   Step: {global_step}\n"
+                            f"   Saving to: {osp.join(save_dir, 'best_model/')}\n"
+                            f"{'='*70}\n"
+                        )
+
+                        # 保存最优模型
+                        if accelerator.is_main_process:
+                            try:
+                                config_name = HydraConfig.get().job.config_name
+                            except Exception:
+                                config_name = "unknown"
+
+                            save_best_model(
+                                accelerator=accelerator,
+                                output_dir=save_dir,
+                                global_step=global_step,
+                                val_metrics=val_result,
+                                config_name=config_name,
+                            )
+                    else:
+                        logger.info(
+                            f"Current MPJPE ({current_mpjpe:.4f} mm) >= "
+                            f"Best MPJPE ({best_mpjpe_info['best_micro_mpjpe']:.4f} mm), "
+                            f"not saving."
+                        )
+                    # ===== 最优模型检查结束 ====="
 
                 # 5. 打印日志
                 if global_step % log_step == 0:
@@ -511,7 +643,7 @@ def main(cfg: DictConfig):
 
     if accelerator.is_main_process:
         now = datetime.datetime.now()
-        date_str = now.strftime("%d-%m-%Y")
+        date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H-%M-%S")
 
         try:
