@@ -17,7 +17,7 @@ AIM:
 
 GENERAL:
   description: ""
-  total_step: 100000
+  total_step: 10000
   log_step: 10
   vis_step: 100
   checkpoint_step: 3000
@@ -46,7 +46,7 @@ TRAIN:
   grad_accum_step: 1
   max_grad: 1.0
   weight_decay: 1e-4
-  sample_per_device: 32
+  sample_per_device: 6
   mixed_precision: "bf16"
   expansion_ratio: 2.0
   scale_z_range: [0.9, 1.1]  # 保持不变，数据标注有问题
