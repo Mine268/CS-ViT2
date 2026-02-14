@@ -65,6 +65,8 @@ def compute_mpvpe_stats(
     # 2. 计算欧式距离
     # [B, T, V, 3] -> [B, T, V]
     error_per_vertex = torch.norm(pred - gt, p=2, dim=-1)
+    # [B, T]
+    error_per_vertex = torch.mean(error_per_vertex, dim=-1)
 
     # 3. 处理 Mask
     # 原逻辑中 metrics_accum[3] += verts_error[mask_v].numel()
@@ -76,14 +78,9 @@ def compute_mpvpe_stats(
     mask_bool = mask > 0.5  # [B, T]
 
     if mask_bool.any():
-        # 利用 PyTorch 的高级索引:
-        # error_per_vertex[mask_bool] 会选出 mask 为 True 的那些帧的所有顶点
-        # 结果形状为 [N_valid_frames, V]
-        valid_errors = error_per_vertex[mask_bool]
-
-        batch_total_error = valid_errors.sum()
-        batch_total_count = valid_errors.numel()  # 自动计算 N_valid_frames * V
-        return batch_total_error, torch.tensor(batch_total_count, device=pred.device)
+        batch_total_error = (error_per_vertex * mask).sum()
+        batch_total_count = mask_bool.sum()
+        return batch_total_error, batch_total_count
     else:
         return torch.tensor(0.0, device=pred.device), torch.tensor(
             0.0, device=pred.device

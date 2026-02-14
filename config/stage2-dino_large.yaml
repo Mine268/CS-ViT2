@@ -80,7 +80,7 @@ MODEL:
   img_mean: [0.485, 0.456, 0.406]
   img_std: [0.229, 0.224, 0.225]
   stage: stage2
-  stage1_weight: checkpoint/08-02-2026/22-14-27_stage1-dino_large/checkpoints/checkpoint-9000
+  stage1_weight: checkpoint/2026-02-11/23-53-36_stage1-dino_large/best_model
   num_frame: 7  # Stage 2 时序建模需要 > 1 帧
   joint_type: "3"
   norm_by_hand: true

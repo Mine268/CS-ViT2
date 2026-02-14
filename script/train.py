@@ -289,7 +289,7 @@ def val(
 
         output = net(batch)
 
-        joint_cam_gt = batch["joint_cam"]
+        joint_cam_gt = batch["joint_cam"][:, -1:]
         joint_rel_gt = joint_cam_gt - joint_cam_gt[:, :, :1]
         verts_cam_gt = output["result"]["verts_cam_gt"]
         verts_rel_gt = verts_cam_gt - joint_cam_gt[:, :, :1]
@@ -299,11 +299,11 @@ def val(
         verts_cam_pred = output["result"]["verts_cam_pred"]
         verts_rel_pred = verts_cam_pred - joint_cam_pred[:, :, :1]
 
-        joint_valid = batch["joint_valid"]
-        mano_valid = batch["mano_valid"]
+        joint_valid = batch["joint_valid"][:, -1:]
+        mano_valid = batch["mano_valid"][:, -1:]
         if "norm_idx" in output["result"]:
             norm_idx = output["result"]["norm_idx"]
-            norm_valid = torch.all(batch["joint_valid"][:, :, norm_idx] > 0.5, dim=-1).float()
+            norm_valid = torch.all(batch["joint_valid"][:, -1:, norm_idx] > 0.5, dim=-1).float()
         else:
             norm_valid = torch.ones(joint_valid.shape[:2], device=joint_valid.device)
 
