@@ -291,12 +291,12 @@ def val(
 
         joint_cam_gt = batch["joint_cam"][:, -1:]
         joint_rel_gt = joint_cam_gt - joint_cam_gt[:, :, :1]
-        verts_cam_gt = output["result"]["verts_cam_gt"]
+        verts_cam_gt = output["result"]["verts_cam_gt"][:, -1:]
         verts_rel_gt = verts_cam_gt - joint_cam_gt[:, :, :1]
 
-        joint_cam_pred = output["result"]["joint_cam_pred"]
+        joint_cam_pred = output["result"]["joint_cam_pred"][:, -1:]
         joint_rel_pred = joint_cam_pred - joint_cam_pred[:, :, :1]
-        verts_cam_pred = output["result"]["verts_cam_pred"]
+        verts_cam_pred = output["result"]["verts_cam_pred"][:, -1:]
         verts_rel_pred = verts_cam_pred - joint_cam_pred[:, :, :1]
 
         joint_valid = batch["joint_valid"][:, -1:]

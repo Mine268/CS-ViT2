@@ -434,29 +434,29 @@ class BundleLoss2(nn.Module):
         Args:
             xxx_pred: [b,t,48/10/3,n]
         """
-        # fk to pose (只对最后一帧做 FK)
+        # fk to pose (全帧 FK)
         with torch.no_grad():
             _, vert_rel_gt = self.rmano_layer(
-                batch["mano_pose"][:, -1:], batch["mano_shape"][:, -1:]
+                batch["mano_pose"], batch["mano_shape"]
             )
         # decouple shape and pose
         joint_rel_pred, vert_rel_pred = self.rmano_layer(
-            pose_pred[:, -1:], shape_pred[:, -1:].detach()
+            pose_pred, shape_pred.detach()
         )
         if self.norm_by_hand:
             # [b,t]
             norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
-                batch["joint_cam"][:, -1:], batch["joint_valid"][:, -1:]
+                batch["joint_cam"], batch["joint_valid"]
             )
 
         # get data
-        pose_gt = batch["mano_pose"][:, -1:]
-        shape_gt = batch["mano_shape"][:, -1:]
-        mano_valid = batch["mano_valid"][:, -1:] # [b,t]
-        joint_valid = batch["joint_valid"][:, -1:] # [b,t,j]
+        pose_gt = batch["mano_pose"]
+        shape_gt = batch["mano_shape"]
+        mano_valid = batch["mano_valid"] # [b,t]
+        joint_valid = batch["joint_valid"] # [b,t,j]
 
         # get trans gt data
-        trans_gt = batch["joint_cam"][:, -1:, 0] # [b,t,3]
+        trans_gt = batch["joint_cam"][:, :, 0] # [b,t,3]
         if self.norm_by_hand:
             # 添加 epsilon 防止除零导致 NaN/Inf
             trans_gt = trans_gt / (norm_scale_gt[..., None] + NORM_SCALE_EPSILON)
@@ -480,7 +480,7 @@ class BundleLoss2(nn.Module):
             )
 
         # joint loss
-        loss_joint_rel = self.l1(joint_rel_pred, batch["joint_rel"][:, -1:]) # [b,t,j,d]
+        loss_joint_rel = self.l1(joint_rel_pred, batch["joint_rel"]) # [b,t,j,d]
         loss_joint_rel = torch.mean(loss_joint_rel * joint_valid[..., None])
 
         # 投影 loss（使用 scaled trans，避免修改原始 trans_pred）
@@ -490,13 +490,13 @@ class BundleLoss2(nn.Module):
         else:
             trans_pred_scaled = trans_pred
 
-        joint_cam_gt = batch["joint_cam"][:, -1:]
+        joint_cam_gt = batch["joint_cam"]
         joint_cam_pred = joint_rel_pred + trans_pred_scaled[:, :, None, :]
         joint_img_gt = proj_points_3d(
-            joint_cam_gt, batch["focal"][:, -1:], batch["princpt"][:, -1:]
+            joint_cam_gt, batch["focal"], batch["princpt"]
         )
         joint_img_pred = proj_points_3d(
-            joint_cam_pred, batch["focal"][:, -1:], batch["princpt"][:, -1:]
+            joint_cam_pred, batch["focal"], batch["princpt"]
         )
         # 使用鲁棒loss计算重投影误差
         loss_joint_img = self.reproj_loss_fn(joint_img_pred, joint_img_gt) # [b,1,j,2]
@@ -521,7 +521,7 @@ class BundleLoss2(nn.Module):
         }
 
         fk_result = {
-            "verts_cam_gt": vert_rel_gt + batch["joint_cam"][:, -1:, :1],
+            "verts_cam_gt": vert_rel_gt + batch["joint_cam"][:, :, :1],
             "verts_rel_gt": vert_rel_gt,
             "joint_cam_pred": joint_cam_pred,
             "joint_rel_pred": joint_rel_pred,

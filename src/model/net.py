@@ -346,14 +346,15 @@ class PoseNet(nn.Module):
                 eps.rearrange(tokens_out, "b t d -> (b t) d")
             )
 
-        # 统一 reshape：Stage 1 和 Stage 2 都输出 [b, 1, d]
+        # reshape: Stage 1 输出 [b,1,d], Stage 2 输出 [b,t,d]
+        out_frames = num_frame if self.stage == PoseNet.Stage.STAGE2 else 1
         pose, shape, trans = map(
-            lambda t: eps.rearrange(t, "(b t) d -> b t d", t=1),
+            lambda t: eps.rearrange(t, "(b t) d -> b t d", t=out_frames),
             [pose, shape, trans]
         )
         log_heatmaps = tuple(
             map(
-                lambda t: eps.rearrange(t, "(b t) d -> b t d", t=1),
+                lambda t: eps.rearrange(t, "(b t) d -> b t d", t=out_frames),
                 log_heatmaps,
             )
         )
@@ -453,8 +454,10 @@ class PoseNet(nn.Module):
             img=img, bbox=bbox, focal=focal, princpt=princpt, timestamp=timestamp
         )
 
-        # 2. FK（复用 mano_to_pose，参考 BundleLoss2 的逻辑）
-        # 注意：只对最后一帧进行 FK（与训练时一致）
+        # 2. FK — 推理只取最后一帧
+        pose_pred = pose_pred[:, -1:]
+        shape_pred = shape_pred[:, -1:]
+        trans_pred = trans_pred[:, -1:]
         joint_rel_pred, vert_rel_pred = self.mano_to_pose(pose_pred, shape_pred)
 
         # 3. 处理 norm_by_hand 反归一化
@@ -519,15 +522,15 @@ class PoseNet(nn.Module):
         metric_state = self.metric_meter(
             batch["joint_cam"][:, -1:],
             batch["joint_cam"][:, -1:] - batch["joint_cam"][:, -1:, :1],
-            result["verts_cam_gt"],
-            result["verts_rel_gt"],
-            result["joint_cam_pred"],
-            result["joint_rel_pred"],
-            result["verts_cam_pred"],
-            result["verts_rel_pred"],
+            result["verts_cam_gt"][:, -1:],
+            result["verts_rel_gt"][:, -1:],
+            result["joint_cam_pred"][:, -1:],
+            result["joint_rel_pred"][:, -1:],
+            result["verts_cam_pred"][:, -1:],
+            result["verts_rel_pred"][:, -1:],
             batch["mano_valid"][:, -1:],
             batch["joint_valid"][:, -1:],
-            result["norm_valid_gt"],
+            result["norm_valid_gt"][:, -1:],
         )
 
         loss_state = {

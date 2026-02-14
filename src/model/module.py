@@ -349,6 +349,61 @@ class ViTBackbone(nn.Module):
         return self.num_patch
 
 
+class CausalTRoPESelfAttention(nn.Module):
+    """TRoPE Self-Attention with causal masking.
+
+    Each token at position i can only attend to tokens at positions 0..i.
+    Uses TRoPE (Temporal Rotary Position Embedding) to encode timestamps.
+    """
+
+    def __init__(self, dim, heads=8, dim_head=64, dropout=0.0):
+        super().__init__()
+        inner_dim = dim_head * heads
+        project_out = not (heads == 1 and dim_head == dim)
+
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+        self.dropout = nn.Dropout(dropout)
+
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
+        self.pe = TRotionalPositionEmbedding(dim_head, multi_head=bool(heads > 1))
+
+        self.to_out = (
+            nn.Sequential(nn.Linear(inner_dim, dim), nn.Dropout(dropout))
+            if project_out
+            else nn.Identity()
+        )
+
+    def forward(self, x, t=None):
+        """
+        x: [b, n, d]
+        t: [b, n] timestamps (scaled by trope_scalar before calling)
+        """
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(
+            lambda tensor: eps.rearrange(tensor, "b n (h d) -> b h n d", h=self.heads),
+            [q, k, v]
+        )
+
+        if t is not None:
+            q = self.pe(q, t)
+            k = self.pe(k, t)
+
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+
+        # causal mask: position i can only attend to positions 0..i
+        n = x.shape[1]
+        causal_mask = torch.ones(n, n, dtype=torch.bool, device=x.device).triu(diagonal=1)
+        dots.masked_fill_(causal_mask[None, None], float('-inf'))
+
+        attn = torch.softmax(dots, dim=-1)
+        attn = self.dropout(attn)
+
+        out = torch.matmul(attn, v)
+        out = eps.rearrange(out, "b h n d -> b n (h d)")
+        return self.to_out(out)
+
+
 class TRoPECrossAttention(nn.Module):
 
     def __init__(self, dim, context_dim=None, heads=8, dim_head=64, dropout=0.0):
@@ -662,6 +717,13 @@ class MANOTransformerDecoderHead(nn.Module):
 
 
 class TemporalEncoder(nn.Module):
+    """Causal temporal encoder using TRoPE self-attention.
+
+    All T frames go through causal self-attention (each frame only attends
+    to itself and previous frames). Only the last frame's output is returned,
+    with a zero-initialized residual connection for stable training.
+    """
+
     def __init__(
         self,
         dim: int,
@@ -676,20 +738,18 @@ class TemporalEncoder(nn.Module):
         self.dim = dim
         self.trope_scalar = trope_scalar
 
-        # self.pe = TRotionalPositionEmbedding(self.dim)
-        self.zero_linear = nn.Linear(self.dim, self.dim, bias=True)
-        self.cross_attn = TRoPETransformerCrossAttn(
-            dim=self.dim,
-            depth=num_layer,
-            heads=num_head,
-            dim_head=self.dim // num_head,
-            mlp_dim=self.dim * 2,
-            dropout=dropout,
-            norm="layer",
-            norm_cond_dim=-1,
-            context_dim=self.dim,
-        )
+        self.layers = nn.ModuleList()
+        for _ in range(num_layer):
+            sa = CausalTRoPESelfAttention(
+                dim, heads=num_head, dim_head=dim // num_head, dropout=dropout
+            )
+            ff = FeedForward(dim, dim * 2, dropout=dropout)
+            self.layers.append(nn.ModuleList([
+                PreNorm(dim, sa, norm="layer", norm_cond_dim=-1),
+                PreNorm(dim, ff, norm="layer", norm_cond_dim=-1),
+            ]))
 
+        self.zero_linear = nn.Linear(self.dim, self.dim, bias=True)
         if zero_linear:
             nn.init.zeros_(self.zero_linear.weight)
             nn.init.zeros_(self.zero_linear.bias)
@@ -702,20 +762,18 @@ class TemporalEncoder(nn.Module):
         """
         token: [b,t,d]
         timestamp: [b,t]
+        Returns: [b,1,d] (last frame only)
         """
-        b, t, _ = token.shape
+        timestamp = timestamp / self.trope_scalar
 
-        x = token[:, -1:]
-        ctx = token
+        x = token
+        for sa, ff in self.layers:
+            x = sa(x, t=timestamp) + x
+            x = ff(x) + x
 
-        timestamp /= self.trope_scalar
-        tq = timestamp[:, -1:]
-        tk = timestamp
-
-        y = self.cross_attn(x, tq, tk, context=ctx)
-        y = self.zero_linear(y)
-
-        return x + y
+        # apply zero-initialized residual to all frames
+        delta = self.zero_linear(x)  # [b,t,d]
+        return token + delta
 
 
 class MANOPoseDetokenizer(nn.Module):
