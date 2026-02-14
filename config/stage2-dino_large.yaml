@@ -17,7 +17,7 @@ AIM:
 
 GENERAL:
   description: ""
-  total_step: 10000
+  total_step: 50000
   log_step: 10
   vis_step: 100
   checkpoint_step: 3000
