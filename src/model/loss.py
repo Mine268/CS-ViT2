@@ -443,17 +443,20 @@ class BundleLoss2(nn.Module):
         joint_rel_pred, vert_rel_pred = self.rmano_layer(
             pose_pred, shape_pred.detach()
         )
-        if self.norm_by_hand:
-            # [b,t]
-            norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
-                batch["joint_cam"], batch["joint_valid"]
-            )
-
         # get data
         pose_gt = batch["mano_pose"]
         shape_gt = batch["mano_shape"]
         mano_valid = batch["mano_valid"] # [b,t]
         joint_valid = batch["joint_valid"] # [b,t,j]
+
+        if self.norm_by_hand:
+            # [b,t]
+            norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
+                batch["joint_cam"], batch["joint_valid"]
+            )
+        else:
+            # 当 norm_by_hand=False 时，norm_valid_gt 默认为 1（全部有效）
+            norm_valid_gt = torch.ones_like(mano_valid)
 
         # get trans gt data
         trans_gt = batch["joint_cam"][:, :, 0] # [b,t,3]

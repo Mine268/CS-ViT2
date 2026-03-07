@@ -105,3 +105,83 @@ accelerate launch --main_process_port 0 --gpu_ids 0,1,2,3 --num_processes 4 -m s
 - `MODEL.stage1_weight`：由于训练需要在stage1的基础上进行，所以必须通过这个参数指定权重。为了调试的方便可以将`/data_1/renkaiwen/CS-ViT2/checkpoint`下的这个文件夹拷贝走
 
 命令的其他行为与stage1一样，不做赘述。
+
+## 4. 测试/推理
+
+使用 `script/test.py` 在测试集上进行模型评估。
+
+### 4.1 基本用法
+
+```bash
+# 单卡测试
+python script/test.py \
+    --config-name=stage1-dino_large \
+    TEST.checkpoint_path=checkpoint/exp/checkpoints/checkpoint-30000 \
+    DATA.test.source='[/path/to/test/data/*.tar]'
+
+# 多卡测试（推荐用于大批量推理）
+accelerate launch --gpu_ids 0,1,2,3 --num_processes 4 -m script.test \
+    --config-name=stage1-dino_large \
+    TEST.checkpoint_path=checkpoint/exp/checkpoints/checkpoint-30000 \
+    DATA.test.source='[/path/to/test/data/*.tar]'
+```
+
+### 4.2 必需参数
+
+| 参数 | 说明 |
+|------|------|
+| `TEST.checkpoint_path` | Checkpoint 路径（如 `checkpoint/exp/checkpoints/checkpoint-30000`） |
+| `DATA.test.source` | 测试数据路径，支持 glob 模式（如 `'[/mnt/data/test/*.tar]'`） |
+
+### 4.3 可选参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `TEST.batch_size` | 32 | 测试 batch size |
+| `TEST.max_samples` | null | 限制测试样本数（用于调试） |
+| `TEST.output_dir` | 自动推断 | 输出目录，默认从 checkpoint_path 自动计算 |
+| `TEST.enable_vis` | true | 是否启用 AIM 可视化 |
+| `TEST.vis_step` | 10 | 可视化频率（每 N 个 batch） |
+| `TEST.compression` | gzip | HDF5 压缩方式（gzip/lzf/null） |
+
+### 4.4 输出结果
+
+测试结果保存在 `checkpoint/{exp_name}/test_results/` 目录下：
+
+| 文件 | 说明 |
+|------|------|
+| `predictions.h5` | 预测结果（包含 joint_cam_pred, vert_cam_pred, mano_pose_pred 等） |
+| `metrics.json` | 快速评估指标（MPJPE, MPVPE） |
+| `test_config.yaml` | 测试使用的配置 |
+
+### 4.5 示例命令
+
+```bash
+# 在 HO3D 测试集上评估 Stage 1 模型
+python -m script.test \
+    --config-name=stage1-dino_large_no_norm \
+    TEST.checkpoint_path=checkpoint/2026-03-05/21-07-09_stage1-dino_large_no_norm/best_model \
+    DATA.test.source=['/mnt/qnap/data/datasets/webdatasets/HO3D_v3/evaluation/*.tar'] \
+    TEST.batch_size=64
+
+# 在 DexYCB 上评估 Stage 2 模型（多卡）
+accelerate launch --gpu_ids 0,1 -m script.test \
+    --config-name=stage2-dino_large \
+    TEST.checkpoint_path=checkpoint/2026-02-12/stage2/checkpoints/checkpoint-30000 \
+    DATA.test.source=['/path/to/dexycb/*.tar'] \
+    TEST.batch_size=32
+
+# 仅测试前 100 个样本（快速验证）
+python script/test.py \
+    --config-name=stage1-dino_large \
+    TEST.checkpoint_path=checkpoint/exp/checkpoints/best_model \
+    DATA.test.source=['/path/to/test/*.tar'] \
+    TEST.max_samples=100
+```
+
+### 4.6 注意事项
+
+1. 配置文件需与训练时使用的配置一致（Stage 1 用 `stage1-dino_large`，Stage 2 用 `stage2-dino_large`）
+2. 测试时会自动关闭数据增强
+3. 多卡测试会自动合并各进程的结果
+4. 如需禁用 AIM 可视化，设置 `TEST.enable_vis=false` 或 `AIM.server_url=.`

@@ -653,7 +653,13 @@ def main(cfg: DictConfig):
         except Exception:
             config_name = "debug"
 
-        _save_dir = osp.join("checkpoint", date_str, f"{time_str}_{config_name}")
+        # Run看板
+        aim_run = Run(
+            experiment=f"{config_name}",
+            repo=cfg.AIM.server_url,
+        )
+
+        _save_dir = osp.join("checkpoint", date_str, f"{time_str}_{config_name}_{aim_run.hash}")
         os.makedirs(_save_dir, exist_ok=True)
 
         # B. 配置名为 file 的 Handler
@@ -667,11 +673,6 @@ def main(cfg: DictConfig):
 
         save_dir_obj[0] = _save_dir
 
-        # Run看板
-        aim_run = Run(
-            experiment=f"{config_name}",
-            repo=cfg.AIM.server_url,
-        )
         aim_run["hparams"] = OmegaConf.to_container(cfg, resolve=True)
         logger.info(f'AIM run initialized in {cfg.AIM.server_url}')
         logger.info(f'AIM run hash: {aim_run.hash}')

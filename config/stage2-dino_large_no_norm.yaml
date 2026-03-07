@@ -1,0 +1,125 @@
+defaults:
+  - _self_
+  - augmentation: default
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job_logging:
+    root:
+      handlers: []
+
+AIM:
+  server_url: aim://10.208.33.93:53800
+
+GENERAL:
+  description: "[no_norm] Stage2 without norm_by_hand"
+  total_step: 50000
+  log_step: 10
+  vis_step: 100
+  checkpoint_step: 3000
+  warmup_step: 5000
+  dropout_warmup_step: 10000  # Dropout渐进式预热步数
+  cosine_cycle: 0.4
+  num_worker: 4
+  prefetch_factor: 1
+  seed: 3229084
+  val_seed: 42  # 验证集固定seed，确保每次验证使用相同数据
+  resume_path: null
+
+TEST:
+  output_dir: output/test_results
+  batch_size: 16        # 测试时的 batch size（可通过命令行覆盖）
+  save_format: hdf5     # 保存格式
+  compression: gzip     # HDF5 压缩方式
+  max_samples: null     # 限制样本数（调试用，null=全部）
+  vis_step: 100         # 可视化频率
+  enable_vis: true      # 是否启用可视化到 AIM
+  checkpoint_path: null # checkpoint 路径（必须通过命令行指定）
+
+TRAIN:
+  lr: 1e-4
+  backbone_lr: 1e-5
+  grad_accum_step: 1
+  max_grad: 1.0
+  weight_decay: 1e-4
+  sample_per_device: 6
+  mixed_precision: "bf16"
+  expansion_ratio: 2.0
+  scale_z_range: [0.9, 1.1]  # 保持不变，数据标注有问题
+  scale_f_range: [0.9, 1.1]  # 启用focal length增强
+  persp_rot_max: 0.0 # pi/12
+  perspective_normalization: false  # true=透视归一化(bbox中心旋转到主点), false=原始方式
+  augmentation: ${augmentation}  # 引用顶层augmentation配置组
+
+DATA:
+  train:
+    source: [
+      /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*,
+      /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/train/*,
+      /mnt/qnap/data/datasets/webdatasets/HO3D_v3/train/*,
+      /mnt/qnap/data/datasets/webdatasets/HOT3D/train/*
+    ]
+    stride: 1
+  val:
+    source: [
+      /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/val/*,
+      /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/val/*,
+    ]
+    stride: 1
+    max_val_step: 1000
+  test:
+    source: []  # 默认为空，通过命令行指定
+    stride: 1   # 测试时的帧采样步长
+
+MODEL:
+  img_size: 224
+  img_mean: [0.485, 0.456, 0.406]
+  img_std: [0.229, 0.224, 0.225]
+  stage: stage2
+  stage1_weight: null  # 必须通过命令行指定对应的无归一化 Stage1 checkpoint
+  num_frame: 7  # Stage 2 时序建模需要 > 1 帧
+  joint_type: "3"
+  norm_by_hand: false  # 禁用手部归一化，直接预测原始相机坐标系下的 trans
+  backbone:
+    backbone_str: model/facebook/dinov2-large
+    infusion_layer: null
+    drop_cls: false
+    kwargs:
+      # mask_ratio: 0.0
+  handec:
+    num_layer: 4
+    num_head: 16
+    dim_head: 64
+    dim_mlp: 4096
+    dropout: 0.1  # 启用dropout提升泛化性
+    norm: layer
+    context_dim: 1024
+    skip_token_embed: false
+    use_mean_init: false
+    denorm_output: false
+    heatmap_resolution: [512, 512, 1024]  # 提高分辨率，Z轴更高因为范围更大
+  persp_info_embed:
+    type: "ca"
+    num_sample: 8
+    pie_fusion: "all"
+  temporal_encoder:
+    num_layer: 2
+    num_head: 16
+    trope_scalar: 20.0
+    zero_linear: true
+
+LOSS:
+  lambda_theta: 3.0
+  lambda_shape: 3.0
+  lambda_trans: 0.001      # 降低根关节loss权重 (0.05 → 0.001)，因为无归一化时 trans 值更大（mm单位）
+  lambda_rel: 0.012       # 降低相对关节loss权重 (0.015 → 0.012)
+  lambda_img: 0.002
+  supervise_global: true
+  supervise_heatmap: true
+  heatmap_sigma: 0.006     # 调整heatmap_sigma (0.09 → 0.006)，适应无归一化的原始尺度
+  reproj_loss_type: "l1"   # 重投影loss类型: "l1" 或 "robust_l1"
+  reproj_loss_delta: 84.0         # RobustL1Loss阈值(像素), 基于训练log分析的95分位

@@ -120,6 +120,8 @@ def setup_model(cfg: DictConfig):
 
         freeze_backbone=cfg.TRAIN.backbone_lr is None,
         norm_by_hand=cfg.MODEL.get("norm_by_hand", False),
+        reproj_loss_type=cfg.LOSS.get("reproj_loss_type", "l1"),
+        reproj_loss_delta=cfg.LOSS.get("reproj_loss_delta", 84.0),
     )
 
     return net
@@ -580,18 +582,21 @@ def main(cfg: DictConfig):
     )
 
     # 4. 创建输出目录（自动根据 checkpoint_path 设置）
+    # 获取当前日期
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+
     if cfg.TEST.checkpoint_path:
         # 从 checkpoint_path 提取基础目录
         # 例如：checkpoint/07-01-2026/checkpoints/checkpoint-30000 → checkpoint/07-01-2026
         checkpoint_path = cfg.TEST.checkpoint_path
         # 获取 checkpoints 文件夹的父目录
-        checkpoint_parent = osp.dirname(osp.dirname(checkpoint_path))
-        # 在同级创建 test_results 文件夹
-        output_dir = osp.join(checkpoint_parent, "test_results")
+        checkpoint_parent = osp.dirname(checkpoint_path)
+        # 在同级创建带日期的 test_results 文件夹
+        output_dir = osp.join(checkpoint_parent, f"test_results_{today_str}")
         logger.info(f"Auto-set output_dir based on checkpoint_path: {output_dir}")
     else:
-        # 使用配置文件中的默认值
-        output_dir = cfg.TEST.output_dir
+        # 使用配置文件中的默认值，并添加日期后缀
+        output_dir = osp.join(cfg.TEST.output_dir, f"test_results_{today_str}")
 
     if accelerator.is_main_process:
         os.makedirs(output_dir, exist_ok=True)
@@ -601,6 +606,25 @@ def main(cfg: DictConfig):
         config_save_path = osp.join(output_dir, "test_config.yaml")
         OmegaConf.save(cfg, config_save_path)
         logger.info(f"Saved config to {config_save_path}")
+
+        # 保存测试数据源
+        sources_save_path = osp.join(output_dir, "test_sources.txt")
+        with open(sources_save_path, 'w') as f:
+            f.write(f"# Test Date: {today_str}\n")
+            f.write(f"# Number of sources: {len(cfg.DATA.test.source)}\n")
+            f.write("=" * 60 + "\n\n")
+            for i, src in enumerate(cfg.DATA.test.source, 1):
+                f.write(f"[{i}] {src}\n")
+                # 展开通配符，列出匹配的文件
+                matched_files = glob.glob(src)
+                matched_files = sorted(matched_files)
+                if matched_files:
+                    for mf in matched_files:
+                        f.write(f"    - {mf}\n")
+                else:
+                    f.write(f"    (No files matched)\n")
+                f.write("\n")
+        logger.info(f"Saved test sources to {sources_save_path}")
 
     # 5. 初始化 AIM（可选）
     aim_run = None
