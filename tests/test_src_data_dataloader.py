@@ -471,10 +471,10 @@ def test_dataloader2():
 
     loader = get_dataloader(
         glob.glob(
-            # "/mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*.tar",
+            "/mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*.tar",
             # "/mnt/qnap/data/datasets/webdatasets/DexYCB/s1/train/*.tar"
             # "/mnt/qnap/data/datasets/webdatasets/HO3D_v3/evaluation/*.tar"
-            "/mnt/qnap/data/datasets/webdatasets/HOT3D/train/*",
+            # "/mnt/qnap/data/datasets/webdatasets/HOT3D/train/*",
         ),
         num_frames=1,
         stride=1,
@@ -562,6 +562,76 @@ def test_dataloader3():
         print(type(batch2))
 
 
+def test_dataloader_sampling_visualization_smoke():
+    import cv2
+
+    output_origin_dir = "tests/temp_sampling_origin"
+    output_processed_dir = "tests/temp_sampling_processed"
+    os.makedirs(output_origin_dir, exist_ok=True)
+    os.makedirs(output_processed_dir, exist_ok=True)
+
+    source = sorted(glob.glob("/mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*.tar"))
+    if len(source) == 0:
+        raise FileNotFoundError("No InterHand2.6M train tar found for visualization smoke test")
+
+    loader = get_dataloader(
+        source[:1],
+        num_frames=1,
+        stride=1,
+        batch_size=4,
+        num_workers=0,
+        prefetcher_factor=1,
+        infinite=False,
+        seed=42,
+        clip_sampling_mode="random_clip",
+        clips_per_sequence=4,
+        shardshuffle=False,
+        post_clip_shuffle=0,
+    )
+
+    batch = next(iter(loader))
+    assert len(batch["imgs"]) > 0, "Failed to load images from dataloader"
+
+    verify_origin_data(batch, output_origin_dir, bx=0, tx=0)
+
+    batch_processed, trans_2d_mat, _ = preprocess_batch(
+        batch,
+        [256, 256],
+        1.1,
+        [1.0, 1.0],
+        [1.0, 1.0],
+        0.0,
+        "3",
+        False,
+        torch.device("cpu"),
+        None,
+        False,
+    )
+    verify_batch(
+        batch_processed,
+        trans_2d_mat,
+        output_processed_dir,
+        "/mnt/qnap/data/datasets/InterHand2.6M_5fps_batch1/images/train",
+        0,
+        0,
+        batch,
+    )
+
+    expected_paths = [
+        f"{output_origin_dir}/origin.png",
+        f"{output_origin_dir}/joint_cam.png",
+        f"{output_processed_dir}/origin.png",
+        f"{output_processed_dir}/patch.png",
+    ]
+    for img_path in expected_paths:
+        assert os.path.exists(img_path), f"Expected visualization not found: {img_path}"
+        img = cv2.imread(img_path)
+        assert img is not None and img.size > 0, f"Failed to read visualization image: {img_path}"
+
+    print("sampling visualization smoke test passed")
+
+
 if __name__ == "__main__":
-    test_dataloader2()
+    test_dataloader_sampling_visualization_smoke()
+    # test_dataloader2()
     # test_dataloader3()
