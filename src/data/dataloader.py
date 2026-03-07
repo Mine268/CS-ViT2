@@ -7,7 +7,7 @@ import numpy as np
 import webdataset as wds
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, get_worker_info
 import torchvision
 
 import kornia.geometry.transform as T
@@ -33,41 +33,94 @@ COLLATE_LIST_KEYS = [
     "imgs", "handedness", "__key__"
 ]
 
-def clip_to_t_frames(num_frames, stride, source):
+def _build_sub_sample(sample, start: int, end: int, clip_idx: int):
+    imgs_path = sample["imgs_path.json"]
+    img_list = sample["img_bytes.pickle"]
+    handedness = sample["handedness.json"]
+
+    sub_sample = {
+        "__key__": f"{sample['__key__']}_{clip_idx:04d}",
+        "handedness": handedness,
+        "imgs_path": imgs_path[start:end],
+        "imgs_bytes": img_list[start:end],
+    }
+    for key in NPY_KEYS:
+        if key in sample:
+            out_key = key.replace(".npy", "")
+            sub_sample[out_key] = sample[key][start:end].copy()
+
+    return sub_sample
+
+
+def _select_clip_indices(
+    total_frames: int,
+    num_frames: int,
+    stride: int,
+    sampling_mode: str,
+    clips_per_sequence: Optional[int],
+    rng: np.random.Generator,
+) -> List[int]:
+    total_clips = (total_frames - num_frames) // stride + 1
+    if total_clips <= 0:
+        return []
+
+    if sampling_mode == "dense":
+        return list(range(total_clips))
+
+    if sampling_mode != "random_clip":
+        raise ValueError(f"Unsupported clip sampling mode: {sampling_mode}")
+
+    if clips_per_sequence is None:
+        clips_per_sequence = 1
+    if clips_per_sequence <= 0:
+        raise ValueError(
+            f"clips_per_sequence must be positive for random_clip, got {clips_per_sequence}"
+        )
+
+    num_select = min(clips_per_sequence, total_clips)
+    selected = rng.choice(total_clips, size=num_select, replace=False)
+    return selected.tolist()
+
+
+def clip_to_t_frames(
+    num_frames,
+    stride,
+    source,
+    sampling_mode: str = "dense",
+    clips_per_sequence: Optional[int] = None,
+    seed: Optional[int] = None,
+):
     """
     将序列样本拆分为小片小片的连续样本
+
+    sampling_mode:
+        - dense: 枚举该序列的全部连续窗口，适合 val/test
+        - random_clip: 每个原始序列只随机采样少量 clip，适合 train
     """
+    worker_info = get_worker_info()
+    worker_id = worker_info.id if worker_info is not None else 0
+    rng_seed = None if seed is None else seed + worker_id
+    rng = np.random.default_rng(rng_seed)
+
     for sample in source:
-        imgs_path = sample["imgs_path.json"]
         img_list = sample["img_bytes.pickle"]
-        handedness = sample["handedness.json"] # "l" or "r"
         total_frames = len(img_list)
         if total_frames < num_frames:
             continue
 
-        total_samples = (total_frames - num_frames) // stride + 1
+        clip_indices = _select_clip_indices(
+            total_frames=total_frames,
+            num_frames=num_frames,
+            stride=stride,
+            sampling_mode=sampling_mode,
+            clips_per_sequence=clips_per_sequence,
+            rng=rng,
+        )
 
-        for i in range(total_samples):
-            start = i * stride
+        for clip_idx in clip_indices:
+            start = int(clip_idx) * stride
             end = start + num_frames
-
-            # 构建输出样本 (包含 T 帧数据)
-            sub_sample = {
-                # 构造唯一的 Key: 原Key_切片序号
-                "__key__": f"{sample['__key__']}_{i:04d}",
-                "handedness": handedness,
-                # 记录图片地址
-                "imgs_path": imgs_path[start:end],
-                # 图片字节流：直接切片 List
-                "imgs_bytes": img_list[start:end],
-            }
-            for key in NPY_KEYS:
-                if key in sample:
-                    out_key = key.replace(".npy", "") # 去后缀
-                    # 这里执行的是 Numpy 的第一维切片操作
-                    sub_sample[out_key] = sample[key][start:end].copy()
-
-            yield sub_sample
+            yield _build_sub_sample(sample, start, end, int(clip_idx))
 
 def preprocess_frame(sample):
     """将图像二进制流转换为图片"""
@@ -129,6 +182,10 @@ def get_dataloader(
     prefetcher_factor: int,
     infinite: bool = True,
     seed: Optional[int] = None,
+    clip_sampling_mode: str = "dense",
+    clips_per_sequence: Optional[int] = None,
+    shardshuffle: Union[bool, int] = False,
+    post_clip_shuffle: int = 200,
 ) -> wds.WebDataset:
     """获得wds数据加载器
 
@@ -143,16 +200,32 @@ def get_dataloader(
         wds.WebDataset(
             url,
             resampled=infinite,
+            shardshuffle=shardshuffle,
             nodesplitter=wds.split_by_node,
             workersplitter=wds.split_by_worker,
         )
         .shuffle(20, initial=seed if seed is not None else 0)
         .decode()
-        .compose(partial(clip_to_t_frames, num_frames, stride))
-        .shuffle(200, initial=seed if seed is not None else 0)
-        .map(preprocess_frame)
-        .batched(batch_size, partial=False, collation_fn=collate_fn)
-        # .with_epoch(10000)
+    )
+
+    dataset = dataset.compose(
+        partial(
+            clip_to_t_frames,
+            num_frames,
+            stride,
+            sampling_mode=clip_sampling_mode,
+            clips_per_sequence=clips_per_sequence,
+            seed=seed,
+        )
+    )
+
+    if post_clip_shuffle > 0:
+        dataset = dataset.shuffle(post_clip_shuffle, initial=seed if seed is not None else 0)
+
+    dataset = dataset.map(preprocess_frame).batched(
+        batch_size,
+        partial=False,
+        collation_fn=collate_fn,
     )
 
     dataloader = DataLoader(

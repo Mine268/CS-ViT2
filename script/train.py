@@ -129,6 +129,7 @@ def manage_checkpoints(output_dir, keep_last_n=3):
 
 
 def setup_dataloader(cfg: DictConfig):
+    train_sampling_cfg = cfg.DATA.train.get("sampling", {})
     train_sources = []
     for src in cfg.DATA.train.source:
         matched_files = glob.glob(src)
@@ -142,9 +143,14 @@ def setup_dataloader(cfg: DictConfig):
         num_workers=cfg.GENERAL.num_worker,
         prefetcher_factor=cfg.GENERAL.prefetch_factor,
         infinite=True,
+        clip_sampling_mode=train_sampling_cfg.get("mode", "dense"),
+        clips_per_sequence=train_sampling_cfg.get("clips_per_sequence", None),
+        shardshuffle=train_sampling_cfg.get("shardshuffle", False),
+        post_clip_shuffle=train_sampling_cfg.get("post_clip_shuffle", 200),
     )
     logger.info(f"setup train loader: {train_sources}")
 
+    val_sampling_cfg = cfg.DATA.val.get("sampling", {})
     val_sources = []
     for src in cfg.DATA.val.source:
         matched_files = glob.glob(src)
@@ -159,6 +165,10 @@ def setup_dataloader(cfg: DictConfig):
         prefetcher_factor=cfg.GENERAL.prefetch_factor,
         infinite=False,
         seed=cfg.GENERAL.get("val_seed", 42),  # 固定验证集seed确保一致性
+        clip_sampling_mode=val_sampling_cfg.get("mode", "dense"),
+        clips_per_sequence=val_sampling_cfg.get("clips_per_sequence", None),
+        shardshuffle=val_sampling_cfg.get("shardshuffle", False),
+        post_clip_shuffle=val_sampling_cfg.get("post_clip_shuffle", 200),
     )
     logger.info(f"setup val loader: {val_sources}")
 

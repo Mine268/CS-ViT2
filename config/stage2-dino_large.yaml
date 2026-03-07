@@ -64,6 +64,11 @@ DATA:
       /mnt/qnap/data/datasets/webdatasets/HOT3D/train/*
     ]
     stride: 1
+    sampling:
+      mode: random_clip
+      clips_per_sequence: 1
+      shardshuffle: 32
+      post_clip_shuffle: 256
   val:
     source: [
       /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/val/*,
@@ -71,9 +76,17 @@ DATA:
     ]
     stride: 1
     max_val_step: 1000
+    sampling:
+      mode: dense
+      shardshuffle: false
+      post_clip_shuffle: 0
   test:
     source: []  # 默认为空，通过命令行指定
     stride: 1   # 测试时的帧采样步长
+    sampling:
+      mode: dense
+      shardshuffle: false
+      post_clip_shuffle: 0
 
 MODEL:
   img_size: 224

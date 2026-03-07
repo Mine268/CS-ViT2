@@ -54,6 +54,7 @@ def setup_test_dataloader(cfg: DictConfig):
             "DATA.test.source='[/path/to/test/data/*]'"
         )
 
+    test_sampling_cfg = cfg.DATA.test.get("sampling", {})
     test_loader = get_dataloader(
         url=test_sources,
         num_frames=cfg.MODEL.num_frame,
@@ -63,6 +64,10 @@ def setup_test_dataloader(cfg: DictConfig):
         prefetcher_factor=1,
         infinite=False,             # 单次遍历
         seed=42,                    # 固定种子
+        clip_sampling_mode=test_sampling_cfg.get("mode", "dense"),
+        clips_per_sequence=test_sampling_cfg.get("clips_per_sequence", None),
+        shardshuffle=test_sampling_cfg.get("shardshuffle", False),
+        post_clip_shuffle=test_sampling_cfg.get("post_clip_shuffle", 200),
     )
     logger.info(f"Setup test loader: {test_sources}")
 
@@ -583,7 +588,7 @@ def main(cfg: DictConfig):
 
     # 4. 创建输出目录（自动根据 checkpoint_path 设置）
     # 获取当前日期
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     if cfg.TEST.checkpoint_path:
         # 从 checkpoint_path 提取基础目录

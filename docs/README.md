@@ -12,6 +12,11 @@
   - 故障排查
 
 ### 详细说明
+- **[DATALOADER_SAMPLING_STRATEGY.md](DATALOADER_SAMPLING_STRATEGY.md)** - 训练/验证/测试采样策略说明
+  - 为什么训练不再枚举全部滑窗
+  - `random_clip` 与 `dense` 的分工
+  - 如何提升 batch 内随机性且避免爆内存
+
 - **[IMPROVEMENTS_SUMMARY.md](IMPROVEMENTS_SUMMARY.md)** - 训练优化改进总结
   - 问题分析和诊断
   - 渐进式Dropout实现
@@ -90,7 +95,8 @@
 
 ### 如果你想快速开始训练
 1. 阅读 **[QUICK_START.md](QUICK_START.md)**
-2. 运行测试并启动训练
+2. 阅读 **[DATALOADER_SAMPLING_STRATEGY.md](DATALOADER_SAMPLING_STRATEGY.md)**
+3. 运行测试并启动训练
 
 ### 如果你想了解改进细节
 1. 阅读 **[IMPROVEMENTS_SUMMARY.md](IMPROVEMENTS_SUMMARY.md)** - 了解为什么做这些改动
@@ -123,9 +129,10 @@
 
 ## 📅 更新日期
 
-**最后更新**: 2026-02-11
+**最后更新**: 2026-03-07
 
 **重要更新**:
+- 2026-03-07: 增加 train/val/test 采样策略文档，训练默认切换为 `random_clip`
 - 2026-02-11: norm_by_hand 功能文档和重投影 loss 配置文档完善
 - 2026-02-10: Stage 2 "只预测最后一帧" bug 修复，脚本统一为 `train.py`
 - 2026-02-10: predict_full() 反归一化逻辑修复，重投影 loss 配置化
