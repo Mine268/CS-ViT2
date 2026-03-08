@@ -64,6 +64,16 @@ DATA:
       /mnt/qnap/data/datasets/webdatasets/HOT3D/train/*
     ]
     stride: 1
+    depth_bins:
+      enabled: false
+      root: /mnt/qnap/data/datasets/webdatasets/depth-bins
+      dataset_names: []
+      split: train
+      selected_bins: null
+      mix_strategy: uniform_random
+      bin_weights: null
+      shardshuffle: false
+      sample_shuffle: 200
     sampling:
       mode: random_clip
       clips_per_sequence: 1

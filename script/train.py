@@ -21,6 +21,10 @@ from accelerate.logging import get_logger
 from aim import Run, Image
 
 from src.data.dataloader import get_dataloader
+from src.data.depth_bin_dataloader import (
+    collect_depth_bin_sources,
+    get_depth_bin_dataloader,
+)
 from src.data.preprocess import preprocess_batch
 from src.model.net import PoseNet
 from src.utils.vis import vis
@@ -32,61 +36,48 @@ logger = get_logger(__name__)
 save_dir = None
 
 
-def save_best_model(
+def save_best_model_variant(
     accelerator: Accelerator,
     output_dir: str,
     global_step: int,
     val_metrics: Dict[str, float],
     config_name: str,
+    best_dir_name: str,
+    metadata_filename: str,
 ):
-    """
-    保存最优模型及其元数据
-
-    Args:
-        accelerator: Accelerator 实例
-        output_dir: 输出目录 (checkpoint/<date>/<time>_<config>/)
-        global_step: 当前训练步数
-        val_metrics: 验证指标字典 (包含 micro_mpjpe 等)
-        config_name: 配置名称
-    """
+    """保存指定指标对应的最优模型及其元数据。"""
     if not accelerator.is_main_process:
         return
 
-    best_model_dir = osp.join(output_dir, "best_model")
-
-    # 保存完整 state (模型 + 优化器 + 调度器)
+    best_model_dir = osp.join(output_dir, best_dir_name)
     accelerator.save_state(best_model_dir)
 
-    # 保存元数据
     metadata = {
         "step": global_step,
         "config_name": config_name,
         "timestamp": datetime.datetime.now().isoformat(),
-        **val_metrics  # 展开所有验证指标
+        "best_dir_name": best_dir_name,
+        **val_metrics,
     }
 
-    metadata_path = osp.join(output_dir, "best_model_info.json")
+    metadata_path = osp.join(output_dir, metadata_filename)
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
 
     logger.info(f"Best model metadata saved to {metadata_path}")
 
 
-def load_best_model_info(output_dir: str) -> Dict:
-    """
-    加载最优模型的元数据（如果存在）
-
-    Args:
-        output_dir: 输出目录
-
-    Returns:
-        包含最优模型信息的字典，如果不存在则返回默认值
-    """
-    metadata_path = osp.join(output_dir, "best_model_info.json")
+def load_best_metric_info(
+    output_dir: str,
+    metric_key: str,
+    metadata_filename: str,
+) -> Dict:
+    """加载指定指标的最优模型元数据。"""
+    metadata_path = osp.join(output_dir, metadata_filename)
 
     if not osp.exists(metadata_path):
         return {
-            "best_micro_mpjpe": float('inf'),
+            "best_value": float('inf'),
             "step": 0,
         }
 
@@ -94,13 +85,13 @@ def load_best_model_info(output_dir: str) -> Dict:
         with open(metadata_path, 'r') as f:
             data = json.load(f)
             return {
-                "best_micro_mpjpe": data.get("micro_mpjpe", float('inf')),
+                "best_value": data.get(metric_key, float('inf')),
                 "step": data.get("step", 0),
             }
     except (json.JSONDecodeError, IOError) as e:
-        logger.warning(f"Failed to load best model info: {e}")
+        logger.warning(f"Failed to load best model info from {metadata_path}: {e}")
         return {
-            "best_micro_mpjpe": float('inf'),
+            "best_value": float('inf'),
             "step": 0,
         }
 
@@ -130,25 +121,63 @@ def manage_checkpoints(output_dir, keep_last_n=3):
 
 def setup_dataloader(cfg: DictConfig):
     train_sampling_cfg = cfg.DATA.train.get("sampling", {})
-    train_sources = []
-    for src in cfg.DATA.train.source:
-        matched_files = glob.glob(src)
-        matched_files = sorted(matched_files)
-        train_sources.extend(matched_files)
-    train_loader = get_dataloader(
-        url=train_sources,
-        num_frames=cfg.MODEL.num_frame,
-        stride=cfg.DATA.train.stride,
-        batch_size=cfg.TRAIN.sample_per_device,
-        num_workers=cfg.GENERAL.num_worker,
-        prefetcher_factor=cfg.GENERAL.prefetch_factor,
-        infinite=True,
-        clip_sampling_mode=train_sampling_cfg.get("mode", "dense"),
-        clips_per_sequence=train_sampling_cfg.get("clips_per_sequence", None),
-        shardshuffle=train_sampling_cfg.get("shardshuffle", False),
-        post_clip_shuffle=train_sampling_cfg.get("post_clip_shuffle", 200),
-    )
-    logger.info(f"setup train loader: {train_sources}")
+    train_depth_bin_cfg = cfg.DATA.train.get("depth_bins", {})
+
+    if train_depth_bin_cfg.get("enabled", False):
+        dataset_names = train_depth_bin_cfg.get("dataset_names", [])
+        split = train_depth_bin_cfg.get("split", "train")
+        bin_sources = collect_depth_bin_sources(
+            root=train_depth_bin_cfg["root"],
+            dataset_names=dataset_names,
+            split=split,
+            num_frames=cfg.MODEL.num_frame,
+            stride=cfg.DATA.train.stride,
+            selected_bins=train_depth_bin_cfg.get("selected_bins", None),
+        )
+        if len(bin_sources) == 0:
+            raise ValueError(
+                f"No depth-bin data found under root={train_depth_bin_cfg['root']} "
+                f"for datasets={dataset_names}, split={split}, "
+                f"nf={cfg.MODEL.num_frame}, stride={cfg.DATA.train.stride}"
+            )
+
+        bin_weights = train_depth_bin_cfg.get("bin_weights", None)
+        train_loader = get_depth_bin_dataloader(
+            bin_sources=bin_sources,
+            batch_size=cfg.TRAIN.sample_per_device,
+            num_workers=cfg.GENERAL.num_worker,
+            prefetcher_factor=cfg.GENERAL.prefetch_factor,
+            infinite=True,
+            seed=cfg.GENERAL.get("seed", None),
+            bin_weights=bin_weights,
+            shardshuffle=train_depth_bin_cfg.get("shardshuffle", False),
+            sample_shuffle=train_depth_bin_cfg.get("sample_shuffle", 200),
+            mix_strategy=train_depth_bin_cfg.get("mix_strategy", "uniform_random"),
+        )
+        logger.info(
+            f"setup depth-bin train loader: root={train_depth_bin_cfg['root']} "
+            f"datasets={dataset_names} bins={list(bin_sources.keys())}"
+        )
+    else:
+        train_sources = []
+        for src in cfg.DATA.train.source:
+            matched_files = glob.glob(src)
+            matched_files = sorted(matched_files)
+            train_sources.extend(matched_files)
+        train_loader = get_dataloader(
+            url=train_sources,
+            num_frames=cfg.MODEL.num_frame,
+            stride=cfg.DATA.train.stride,
+            batch_size=cfg.TRAIN.sample_per_device,
+            num_workers=cfg.GENERAL.num_worker,
+            prefetcher_factor=cfg.GENERAL.prefetch_factor,
+            infinite=True,
+            clip_sampling_mode=train_sampling_cfg.get("mode", "dense"),
+            clips_per_sequence=train_sampling_cfg.get("clips_per_sequence", None),
+            shardshuffle=train_sampling_cfg.get("shardshuffle", False),
+            post_clip_shuffle=train_sampling_cfg.get("post_clip_shuffle", 200),
+        )
+        logger.info(f"setup train loader: {train_sources}")
 
     val_sampling_cfg = cfg.DATA.val.get("sampling", {})
     val_sources = []
@@ -163,8 +192,8 @@ def setup_dataloader(cfg: DictConfig):
         batch_size=cfg.TRAIN.sample_per_device,
         num_workers=1, # cfg.GENERAL.num_worker,
         prefetcher_factor=cfg.GENERAL.prefetch_factor,
-        infinite=False,
-        seed=cfg.GENERAL.get("val_seed", 42),  # 固定验证集seed确保一致性
+        infinite=True,
+        seed=cfg.GENERAL.get("val_seed", 42),  # 固定验证顺序，在线验证可复现
         clip_sampling_mode=val_sampling_cfg.get("mode", "dense"),
         clips_per_sequence=val_sampling_cfg.get("clips_per_sequence", None),
         shardshuffle=val_sampling_cfg.get("shardshuffle", False),
@@ -274,14 +303,13 @@ def val(
 
     metric_meter = StreamingMetricMeter()
 
-    # 如果想要显示进度条 (仅主进程)
-    # iter_wrapper = tqdm(val_loader, desc="Val") if accelerator.is_main_process else val_loader
-    iter_wrapper = val_loader
+    if limit_step is None:
+        raise ValueError("在线 val 必须提供 limit_step，以保证各进程严格同步")
 
-    for ix, batch_ in enumerate(iter_wrapper):
+    val_iter = iter(val_loader)
 
-        if limit_step is not None and ix >= limit_step:
-            break
+    for ix in range(limit_step):
+        batch_ = next(val_iter)
 
         batch, trans_2d_mat, _ = preprocess_batch(
             batch_origin=batch_,
@@ -427,20 +455,46 @@ def train(
     global_step = start_step
 
     # ===== 初始化最优模型追踪器 =====
-    best_mpjpe_info = {"best_micro_mpjpe": float('inf'), "step": 0}
+    best_trackers = {
+        "micro_mpjpe": {
+            "best_dir_name": "best_model",
+            "metadata_filename": "best_model_info.json",
+            "display_name": "MPJPE",
+            "best_value": float('inf'),
+            "step": 0,
+        },
+        "micro_rte": {
+            "best_dir_name": "best_model_rte",
+            "metadata_filename": "best_model_rte_info.json",
+            "display_name": "RTE",
+            "best_value": float('inf'),
+            "step": 0,
+        },
+        "micro_mpjpe_rel": {
+            "best_dir_name": "best_model_rel_mpjpe",
+            "metadata_filename": "best_model_rel_mpjpe_info.json",
+            "display_name": "rel-MPJPE",
+            "best_value": float('inf'),
+            "step": 0,
+        },
+    }
     if accelerator.is_main_process:
-        # 尝试从已有的 best_model_info.json 加载历史最优值
-        best_mpjpe_info = load_best_model_info(save_dir)
-        logger.info(
-            f"Best model tracker initialized: "
-            f"best_micro_mpjpe={best_mpjpe_info['best_micro_mpjpe']:.4f} "
-            f"at step {best_mpjpe_info['step']}"
-        )
+        for metric_key, tracker in best_trackers.items():
+            loaded = load_best_metric_info(
+                save_dir,
+                metric_key=metric_key,
+                metadata_filename=tracker["metadata_filename"],
+            )
+            tracker["best_value"] = loaded["best_value"]
+            tracker["step"] = loaded["step"]
+            logger.info(
+                f"Best tracker initialized: {tracker['display_name']}="
+                f"{tracker['best_value']:.4f} at step {tracker['step']}"
+            )
 
-    # 将最优值广播到所有进程（多GPU训练）
-    best_mpjpe_obj = [best_mpjpe_info]
-    broadcast_object_list(best_mpjpe_obj, from_process=0)
-    best_mpjpe_info = best_mpjpe_obj[0]
+    best_trackers_obj = [best_trackers]
+    broadcast_object_list(best_trackers_obj, from_process=0)
+    best_trackers = best_trackers_obj[0]
     # ===== 追踪器初始化结束 =====
 
     # 创建数据增强对象（训练时使用）
@@ -525,45 +579,51 @@ def train(
                         logger.info(f"{k}={v}")
 
                     # ===== 检查是否需要保存最优模型 =====
-                    current_mpjpe = val_result.get("micro_mpjpe", float('inf'))
+                    try:
+                        config_name = HydraConfig.get().job.config_name
+                    except Exception:
+                        config_name = "unknown"
 
-                    if current_mpjpe < best_mpjpe_info["best_micro_mpjpe"]:
-                        # 发现新的最优值
-                        old_best = best_mpjpe_info["best_micro_mpjpe"]
-                        best_mpjpe_info["best_micro_mpjpe"] = current_mpjpe
-                        best_mpjpe_info["step"] = global_step
+                    for metric_key, tracker in best_trackers.items():
+                        current_value = val_result.get(metric_key, float('inf'))
+                        best_value = tracker["best_value"]
+                        display_name = tracker["display_name"]
 
-                        # 打印醒目的日志
-                        logger.info(
-                            f"\n{'='*70}\n"
-                            f"NEW BEST MODEL FOUND!\n"
-                            f"   MPJPE improved: {old_best:.4f} mm -> {current_mpjpe:.4f} mm\n"
-                            f"   Step: {global_step}\n"
-                            f"   Saving to: {osp.join(save_dir, 'best_model/')}\n"
-                            f"{'='*70}\n"
-                        )
-
-                        # 保存最优模型
-                        if accelerator.is_main_process:
-                            try:
-                                config_name = HydraConfig.get().job.config_name
-                            except Exception:
-                                config_name = "unknown"
-
-                            save_best_model(
-                                accelerator=accelerator,
-                                output_dir=save_dir,
-                                global_step=global_step,
-                                val_metrics=val_result,
-                                config_name=config_name,
+                        if current_value < best_value:
+                            tracker["best_value"] = current_value
+                            tracker["step"] = global_step
+                            logger.info(
+                                f"\n{'='*70}\n"
+                                f"NEW BEST MODEL FOUND!\n"
+                                f"   {display_name} improved: {best_value:.4f} -> {current_value:.4f}\n"
+                                f"   Step: {global_step}\n"
+                                f"   Saving to: {osp.join(save_dir, tracker['best_dir_name'])}\n"
+                                f"{'='*70}\n"
                             )
-                    else:
-                        logger.info(
-                            f"Current MPJPE ({current_mpjpe:.4f} mm) >= "
-                            f"Best MPJPE ({best_mpjpe_info['best_micro_mpjpe']:.4f} mm), "
-                            f"not saving."
+                            if accelerator.is_main_process:
+                                save_best_model_variant(
+                                    accelerator=accelerator,
+                                    output_dir=save_dir,
+                                    global_step=global_step,
+                                    val_metrics=val_result,
+                                    config_name=config_name,
+                                    best_dir_name=tracker["best_dir_name"],
+                                    metadata_filename=tracker["metadata_filename"],
+                                )
+                        else:
+                            logger.info(
+                                f"Current {display_name} ({current_value:.4f}) >= "
+                                f"Best {display_name} ({best_value:.4f}), not saving {tracker['best_dir_name']}."
+                            )
+
+                    logger.info(
+                        "Best metrics summary: "
+                        + ", ".join(
+                            f"{tracker['display_name']}={tracker['best_value']:.4f}@{tracker['step']}"
+                            for tracker in best_trackers.values()
                         )
-                    # ===== 最优模型检查结束 ====="
+                    )
+                    # ===== 最优模型检查结束 =====
 
                 # 5. 打印日志
                 if global_step % log_step == 0:

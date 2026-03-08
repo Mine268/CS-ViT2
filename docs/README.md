@@ -12,6 +12,21 @@
   - 故障排查
 
 ### 详细说明
+- **[DEPTH_BIN_REPACK.md](DEPTH_BIN_REPACK.md)** - depth-bin 数据重整方案
+  - 对每个 dataset/bin 单独 repack
+  - 新目录重整后替换旧目录
+  - `repack_stats.json` 与 `repack_summary.json` 说明
+
+- **[DEPTH_BINS_DATASET_LAYOUT.md](DEPTH_BINS_DATASET_LAYOUT.md)** - depth-bins 数据目录结构说明
+  - 外部 `/mnt/qnap/.../depth-bins` 的层级含义
+  - `nf*_s*`、`bin_*`、`summary.json`、tar 文件说明
+  - depth-bin sample 的新增字段说明
+
+- **[DEPTH_BIN_WDS_PIPELINE.md](DEPTH_BIN_WDS_PIPELINE.md)** - 静态深度分桶 WebDataset 流程
+  - 从现有 WDS 离线切 clip 并按深度分桶
+  - 对应的 depth-bin dataloader 使用方式
+  - 目录结构、命令示例与验证状态
+
 - **[DATALOADER_SAMPLING_STRATEGY.md](DATALOADER_SAMPLING_STRATEGY.md)** - 训练/验证/测试采样策略说明
   - 为什么训练不再枚举全部滑窗
   - `random_clip` 与 `dense` 的分工
@@ -132,6 +147,9 @@
 **最后更新**: 2026-03-07
 
 **重要更新**:
+- 2026-03-07: 增加 depth-bin repack 脚本与说明
+- 2026-03-07: 同步 depth-bins 外部目录 README 到 docs
+- 2026-03-07: 增加静态深度分桶 WebDataset 流程文档与对应 dataloader
 - 2026-03-07: 增加 train/val/test 采样策略文档，训练默认切换为 `random_clip`
 - 2026-02-11: norm_by_hand 功能文档和重投影 loss 配置文档完善
 - 2026-02-10: Stage 2 "只预测最后一帧" bug 修复，脚本统一为 `train.py`
