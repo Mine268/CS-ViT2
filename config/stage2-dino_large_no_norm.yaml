@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - augmentation: default
+  - augmentation: color_jitter_only
   - override hydra/job_logging: none
   - override hydra/hydra_logging: none
 
@@ -50,8 +50,8 @@ TRAIN:
   mixed_precision: "bf16"
   expansion_ratio: 2.0
   scale_z_range: [1., 1.]  # 保持不变，数据标注有问题
-  scale_f_range: [0.9, 1.1]  # 启用focal length增强
-  persp_rot_max: 0.0 # pi/12
+  scale_f_range: [1., 1.]  # 关闭 focal 扰动，先稳定绝对几何学习
+  persp_rot_max: 0.0872664626 # pi/36 ≈ 5°, 轻量透视旋转增强
   perspective_normalization: false  # true=透视归一化(bbox中心旋转到主点), false=原始方式
   augmentation: ${augmentation}  # 引用顶层augmentation配置组
 
@@ -139,10 +139,10 @@ LOSS:
   lambda_theta: 3.0
   lambda_shape: 3.0
   lambda_trans: 0.001      # 降低根关节loss权重 (0.05 → 0.001)，因为无归一化时 trans 值更大（mm单位）
-  lambda_rel: 0.012       # 降低相对关节loss权重 (0.015 → 0.012)
+  lambda_rel: 0.012        # 降低相对关节loss权重 (0.015 → 0.012)
   lambda_img: 0.002
   supervise_global: true
   supervise_heatmap: true
-  heatmap_sigma: 0.006     # 调整heatmap_sigma (0.09 → 0.006)，适应无归一化的原始尺度
+  heatmap_sigma: 2.0       # 调整heatmap_sigma (0.09 → 0.006)，适应无归一化的原始尺度
   reproj_loss_type: "l1"   # 重投影loss类型: "l1" 或 "robust_l1"
   reproj_loss_delta: 84.0         # RobustL1Loss阈值(像素), 基于训练log分析的95分位

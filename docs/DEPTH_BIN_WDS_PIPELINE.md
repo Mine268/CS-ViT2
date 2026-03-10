@@ -200,3 +200,31 @@ tmux attach -t depthbin
 
 - repack 说明：`docs/DEPTH_BIN_REPACK.md`
 - repack 脚本：`preprocess/repack_depth_bin_wds.py`
+
+## 12. 当前推荐的 no_norm baseline 配置
+
+针对当前 depth-bin 训练，推荐先使用更保守的几何/像素增强基线：
+
+```yaml
+defaults:
+  - augmentation: color_jitter_only
+
+TRAIN:
+  scale_z_range: [1.0, 1.0]
+  scale_f_range: [1.0, 1.0]
+  persp_rot_max: 0.0872664626  # 约 5°
+```
+
+其中 `color_jitter_only` 当前建议参数为：
+
+```yaml
+color_jitter:
+  brightness: 0.15
+  contrast: 0.15
+  saturation: 0.05
+  hue: 0.0
+  p: 0.5
+```
+
+目的是先稳定绝对几何学习，再观察 depth-bin 采样本身带来的收益。
+

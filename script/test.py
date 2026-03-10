@@ -203,7 +203,9 @@ def test(
         )
 
         # 推理（使用 predict_full，传入 GT 用于 norm_by_hand 反归一化）
-        result = net.predict_full(
+        # 多卡测试时 net 可能被 DDP 包装，需要先 unwrap 后再访问自定义方法
+        unwrapped_net = net.module if hasattr(net, 'module') else net
+        result = unwrapped_net.predict_full(
             img=batch["patches"],
             bbox=batch["patch_bbox"],
             focal=batch["focal"],
@@ -214,8 +216,6 @@ def test(
         )
 
         # 计算 GT 的 verts（使用 MANO FK）
-        # 注意：需要访问 unwrapped net
-        unwrapped_net = net.module if hasattr(net, 'module') else net
         with torch.no_grad():
             _, verts_rel_gt = unwrapped_net.mano_to_pose(
                 batch["mano_pose"][:, -1:],
