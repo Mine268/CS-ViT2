@@ -67,12 +67,14 @@ DATA:
     depth_bins:
       enabled: false
       root: /mnt/qnap/data/datasets/webdatasets/depth-bins
-      dataset_names: []
+      dataset_names: [InterHand2.6M, DexYCB_s1, HO3D_v3, HOT3D]
       split: train
       selected_bins: null
       mix_strategy: uniform_random
       # bin 顺序固定为: [bin_0000_0500, bin_0500_0700, bin_0700_0900, bin_0900_1100, bin_1100_inf]
       bin_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+      dataset_balance_alpha: 0.0
+      min_cell_samples: 1000
       shardshuffle: false
       sample_shuffle: 200
     sampling:

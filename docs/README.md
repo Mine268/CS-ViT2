@@ -25,7 +25,17 @@
 - **[DEPTH_BIN_WDS_PIPELINE.md](DEPTH_BIN_WDS_PIPELINE.md)** - 静态深度分桶 WebDataset 流程
   - 从现有 WDS 离线切 clip 并按深度分桶
   - 对应的 depth-bin dataloader 使用方式
+  - `dataset × depth-bin` 受约束均衡采样
   - 目录结构、命令示例与验证状态
+
+- **[dataset_depth_bin_sampling_weights_with_marginals.png](dataset_depth_bin_sampling_weights_with_marginals.png)** - `dataset × depth-bin` 采样权重与边缘分布
+  - 展示当前 `alpha=0.5` 下的 cell 样本数、bin 边缘分布和 dataset 边缘分布
+
+- **[dataset_depth_bin_sampling_before_after.png](dataset_depth_bin_sampling_before_after.png)** - balance 前后采样分布对比（`alpha=0.5`）
+  - 对比自然样本分布与 `dataset_bin_balanced(alpha=0.5)` 的理论采样分布
+
+- **[dataset_depth_bin_sampling_before_after_alpha0.png](dataset_depth_bin_sampling_before_after_alpha0.png)** - balance 前后采样分布对比（`alpha=0`）
+  - 对比自然样本分布与 `dataset_bin_balanced(alpha=0)` 的理论采样分布
 
 - **[DATALOADER_SAMPLING_STRATEGY.md](DATALOADER_SAMPLING_STRATEGY.md)** - 训练/验证/测试采样策略说明
   - 为什么训练不再枚举全部滑窗

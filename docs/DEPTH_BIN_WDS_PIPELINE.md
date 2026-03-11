@@ -94,9 +94,60 @@ python preprocess/depth_bin_wds.py \
 也支持：
 
 - `mix_strategy="round_robin"`
+- `mix_strategy="dataset_bin_balanced"`
 
+### 4.3 `dataset × depth-bin` 均衡采样
 
-### 4.3 与 `script/train.py` 的接入
+当 `mix_strategy="dataset_bin_balanced"` 时：
+
+1. 先按深度桶做等权采样
+2. 再在同一个深度桶内部，对不同数据集按 `count^(-alpha)` 做受约束均衡
+3. 若某个 `(dataset, bin)` 的样本数小于 `min_cell_samples`，则该 cell 不参与均衡竞争
+
+默认参数建议：
+
+```yaml
+DATA:
+  train:
+    depth_bins:
+      mix_strategy: dataset_bin_balanced
+      dataset_balance_alpha: 0.5
+      min_cell_samples: 1000
+```
+
+这比“20 个 cell 完全等权”更稳，能避免极小 cell 被过度重复采样。
+
+### 4.4 `alpha` 的实际含义与建议
+
+当前实现中，`dataset_balance_alpha` 只作用于 **同一个 depth bin 内部** 的 dataset 平衡：
+
+```text
+P(cell) = P(bin) * P(dataset | bin)
+P(bin) = 等权
+P(dataset | bin) ∝ count(dataset, bin)^(-alpha)
+```
+
+这意味着：
+
+- `alpha = 0`
+  - 同一个 bin 内，所有 active dataset 等权
+- `alpha > 0`
+  - 同一个 bin 内，小样本 dataset 会被抬权
+- `alpha` 越大
+  - bin 内越偏向小 cell
+
+当前实验分析表明：
+
+- 如果目标是“不同深度桶等权，同时让总体 dataset 分布尽量更均衡”
+- 那么 `alpha = 0.0` 往往比 `alpha = 0.5` 更接近目标
+
+相关可视化：
+
+- `docs/dataset_depth_bin_sampling_weights_with_marginals.png`
+- `docs/dataset_depth_bin_sampling_before_after.png`
+- `docs/dataset_depth_bin_sampling_before_after_alpha0.png`
+
+### 4.5 与 `script/train.py` 的接入
 
 训练配置新增了：
 
@@ -111,6 +162,8 @@ DATA:
       selected_bins: null
       mix_strategy: uniform_random
       bin_weights: null
+      dataset_balance_alpha: 0.5
+      min_cell_samples: 1000
       shardshuffle: false
       sample_shuffle: 200
 ```
@@ -151,6 +204,7 @@ DATA:
 - `preprocess/repack_depth_bin_wds.py`
 - `src/data/depth_bin_dataloader.py`
 - `tests/test_depth_bin_wds.py`
+- `tests/test_depth_bin_dataset_balanced.py`
 - `docs/DATALOADER_SAMPLING_STRATEGY.md`
 
 ## 9. 数据目录快速参考
@@ -227,4 +281,3 @@ color_jitter:
 ```
 
 目的是先稳定绝对几何学习，再观察 depth-bin 采样本身带来的收益。
-

@@ -23,7 +23,10 @@ from aim import Run, Image
 from src.data.dataloader import get_dataloader
 from src.data.depth_bin_dataloader import (
     collect_depth_bin_sources,
+    collect_depth_bin_cell_sources,
+    compute_dataset_bin_cell_weights,
     get_depth_bin_dataloader,
+    get_dataset_bin_balanced_dataloader,
 )
 from src.data.preprocess import preprocess_batch
 from src.model.net import PoseNet
@@ -126,38 +129,76 @@ def setup_dataloader(cfg: DictConfig):
     if train_depth_bin_cfg.get("enabled", False):
         dataset_names = train_depth_bin_cfg.get("dataset_names", [])
         split = train_depth_bin_cfg.get("split", "train")
-        bin_sources = collect_depth_bin_sources(
-            root=train_depth_bin_cfg["root"],
-            dataset_names=dataset_names,
-            split=split,
-            num_frames=cfg.MODEL.num_frame,
-            stride=cfg.DATA.train.stride,
-            selected_bins=train_depth_bin_cfg.get("selected_bins", None),
-        )
-        if len(bin_sources) == 0:
-            raise ValueError(
-                f"No depth-bin data found under root={train_depth_bin_cfg['root']} "
-                f"for datasets={dataset_names}, split={split}, "
-                f"nf={cfg.MODEL.num_frame}, stride={cfg.DATA.train.stride}"
+        mix_strategy = train_depth_bin_cfg.get("mix_strategy", "uniform_random")
+        if mix_strategy == "dataset_bin_balanced":
+            cell_sources = collect_depth_bin_cell_sources(
+                root=train_depth_bin_cfg["root"],
+                dataset_names=dataset_names,
+                split=split,
+                num_frames=cfg.MODEL.num_frame,
+                stride=cfg.DATA.train.stride,
+                selected_bins=train_depth_bin_cfg.get("selected_bins", None),
+                min_cell_samples=train_depth_bin_cfg.get("min_cell_samples", 0),
             )
+            if len(cell_sources) == 0:
+                raise ValueError(
+                    f"No dataset-bin cells found under root={train_depth_bin_cfg['root']} "
+                    f"for datasets={dataset_names}, split={split}, "
+                    f"nf={cfg.MODEL.num_frame}, stride={cfg.DATA.train.stride}"
+                )
+            cell_weights = compute_dataset_bin_cell_weights(
+                cell_sources=cell_sources,
+                dataset_balance_alpha=train_depth_bin_cfg.get("dataset_balance_alpha", 0.5),
+            )
+            train_loader = get_dataset_bin_balanced_dataloader(
+                cell_sources=cell_sources,
+                batch_size=cfg.TRAIN.sample_per_device,
+                num_workers=cfg.GENERAL.num_worker,
+                prefetcher_factor=cfg.GENERAL.prefetch_factor,
+                infinite=True,
+                seed=cfg.GENERAL.get("seed", None),
+                dataset_balance_alpha=train_depth_bin_cfg.get("dataset_balance_alpha", 0.5),
+                shardshuffle=train_depth_bin_cfg.get("shardshuffle", False),
+                sample_shuffle=train_depth_bin_cfg.get("sample_shuffle", 200),
+            )
+            logger.info(
+                f"setup dataset-bin-balanced train loader: root={train_depth_bin_cfg['root']} "
+                f"datasets={dataset_names} cells={list(cell_sources.keys())} "
+                f"weights={dict(cell_weights)}"
+            )
+        else:
+            bin_sources = collect_depth_bin_sources(
+                root=train_depth_bin_cfg["root"],
+                dataset_names=dataset_names,
+                split=split,
+                num_frames=cfg.MODEL.num_frame,
+                stride=cfg.DATA.train.stride,
+                selected_bins=train_depth_bin_cfg.get("selected_bins", None),
+            )
+            if len(bin_sources) == 0:
+                raise ValueError(
+                    f"No depth-bin data found under root={train_depth_bin_cfg['root']} "
+                    f"for datasets={dataset_names}, split={split}, "
+                    f"nf={cfg.MODEL.num_frame}, stride={cfg.DATA.train.stride}"
+                )
 
-        bin_weights = train_depth_bin_cfg.get("bin_weights", None)
-        train_loader = get_depth_bin_dataloader(
-            bin_sources=bin_sources,
-            batch_size=cfg.TRAIN.sample_per_device,
-            num_workers=cfg.GENERAL.num_worker,
-            prefetcher_factor=cfg.GENERAL.prefetch_factor,
-            infinite=True,
-            seed=cfg.GENERAL.get("seed", None),
-            bin_weights=bin_weights,
-            shardshuffle=train_depth_bin_cfg.get("shardshuffle", False),
-            sample_shuffle=train_depth_bin_cfg.get("sample_shuffle", 200),
-            mix_strategy=train_depth_bin_cfg.get("mix_strategy", "uniform_random"),
-        )
-        logger.info(
-            f"setup depth-bin train loader: root={train_depth_bin_cfg['root']} "
-            f"datasets={dataset_names} bins={list(bin_sources.keys())}"
-        )
+            bin_weights = train_depth_bin_cfg.get("bin_weights", None)
+            train_loader = get_depth_bin_dataloader(
+                bin_sources=bin_sources,
+                batch_size=cfg.TRAIN.sample_per_device,
+                num_workers=cfg.GENERAL.num_worker,
+                prefetcher_factor=cfg.GENERAL.prefetch_factor,
+                infinite=True,
+                seed=cfg.GENERAL.get("seed", None),
+                bin_weights=bin_weights,
+                shardshuffle=train_depth_bin_cfg.get("shardshuffle", False),
+                sample_shuffle=train_depth_bin_cfg.get("sample_shuffle", 200),
+                mix_strategy=mix_strategy,
+            )
+            logger.info(
+                f"setup depth-bin train loader: root={train_depth_bin_cfg['root']} "
+                f"datasets={dataset_names} bins={list(bin_sources.keys())}"
+            )
     else:
         train_sources = []
         for src in cfg.DATA.train.source:
