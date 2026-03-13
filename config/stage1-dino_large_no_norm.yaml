@@ -20,7 +20,7 @@ GENERAL:
   total_step: 100000
   log_step: 10
   vis_step: 100
-  checkpoint_step: 3000
+  checkpoint_step: 5000
   warmup_step: 5000
   dropout_warmup_step: 10000  # Dropout渐进式预热步数
   cosine_cycle: 0.4
@@ -88,6 +88,7 @@ DATA:
       /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/val/*,
     ]
     stride: 1
+    full_eval: false
     max_val_step: 1000
     sampling:
       mode: dense
@@ -96,6 +97,7 @@ DATA:
   test:
     source: []  # 默认为空，通过命令行指定
     stride: 1   # 测试时的帧采样步长
+    full_eval: false
     sampling:
       mode: dense
       shardshuffle: false

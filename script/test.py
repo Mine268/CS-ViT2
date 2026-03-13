@@ -21,6 +21,11 @@ from accelerate.logging import get_logger
 from aim import Run, Image
 
 from src.data.dataloader import get_dataloader
+from src.data.dataloader import (
+    estimate_wds_shard_clip_counts,
+    build_balanced_clip_segments,
+    get_segmented_wds_dataloader,
+)
 from src.data.preprocess import preprocess_batch
 from src.model.net import PoseNet
 from src.utils.vis import vis
@@ -30,7 +35,7 @@ from src.utils.metric import *
 logger = get_logger(__name__)
 
 
-def setup_test_dataloader(cfg: DictConfig):
+def setup_test_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None):
     """设置测试数据加载器
 
     Args:
@@ -55,21 +60,54 @@ def setup_test_dataloader(cfg: DictConfig):
         )
 
     test_sampling_cfg = cfg.DATA.test.get("sampling", {})
-    test_loader = get_dataloader(
-        url=test_sources,
-        num_frames=cfg.MODEL.num_frame,
-        stride=cfg.DATA.test.stride,
-        batch_size=cfg.TEST.batch_size,
-        num_workers=1,              # 单 worker 避免 tar 文件少的问题
-        prefetcher_factor=1,
-        infinite=False,             # 单次遍历
-        seed=42,                    # 固定种子
-        clip_sampling_mode=test_sampling_cfg.get("mode", "dense"),
-        clips_per_sequence=test_sampling_cfg.get("clips_per_sequence", None),
-        shardshuffle=test_sampling_cfg.get("shardshuffle", False),
-        post_clip_shuffle=test_sampling_cfg.get("post_clip_shuffle", 200),
-    )
-    logger.info(f"Setup test loader: {test_sources}")
+    if cfg.DATA.test.get("full_eval", False):
+        if accelerator is None:
+            raise ValueError("full_eval test requires accelerator for shard partitioning")
+        shard_clip_counts_obj = [None]
+        if accelerator.is_main_process:
+            shard_clip_counts_obj[0] = estimate_wds_shard_clip_counts(
+                urls=test_sources,
+                num_frames=cfg.MODEL.num_frame,
+                stride=cfg.DATA.test.stride,
+            )
+        from accelerate.utils import broadcast_object_list
+        broadcast_object_list(shard_clip_counts_obj, from_process=0)
+        shard_clip_counts = shard_clip_counts_obj[0]
+        rank_segments = build_balanced_clip_segments(
+            urls=test_sources,
+            clip_counts=shard_clip_counts,
+            num_parts=accelerator.num_processes,
+        )
+        process_segments = rank_segments[accelerator.process_index]
+        test_loader = get_segmented_wds_dataloader(
+            segments=process_segments,
+            num_frames=cfg.MODEL.num_frame,
+            stride=cfg.DATA.test.stride,
+            batch_size=cfg.TEST.batch_size,
+            num_workers=0,
+            prefetcher_factor=1,
+        )
+        logger.info(
+            f"Setup full-eval test loader: process={accelerator.process_index}/{accelerator.num_processes} "
+            f"segments={len(process_segments)} total_shards={len(test_sources)} "
+            f"clip_counts={shard_clip_counts}"
+        )
+    else:
+        test_loader = get_dataloader(
+            url=test_sources,
+            num_frames=cfg.MODEL.num_frame,
+            stride=cfg.DATA.test.stride,
+            batch_size=cfg.TEST.batch_size,
+            num_workers=1,              # 单 worker 避免 tar 文件少的问题
+            prefetcher_factor=1,
+            infinite=False,             # 单次遍历
+            seed=42,                    # 固定种子
+            clip_sampling_mode=test_sampling_cfg.get("mode", "dense"),
+            clips_per_sequence=test_sampling_cfg.get("clips_per_sequence", None),
+            shardshuffle=test_sampling_cfg.get("shardshuffle", False),
+            post_clip_shuffle=test_sampling_cfg.get("post_clip_shuffle", 200),
+        )
+        logger.info(f"Setup test loader: {test_sources}")
 
     return test_loader
 
@@ -191,7 +229,7 @@ def test(
         batch, trans_2d_mat, _ = preprocess_batch(
             batch_origin=batch_,
             patch_size=[cfg.MODEL.img_size, cfg.MODEL.img_size],
-            patch_expanstion=1.0,  # 测试时不扩张
+            patch_expanstion=cfg.TRAIN.expansion_ratio,
             scale_z_range=[1.0, 1.0],
             scale_f_range=[1.0, 1.0],
             persp_rot_max=0.0,
@@ -652,7 +690,7 @@ def main(cfg: DictConfig):
     set_seed(42)
 
     # 7. 加载测试数据
-    test_loader = setup_test_dataloader(cfg)
+    test_loader = setup_test_dataloader(cfg, accelerator)
 
     # 8. 初始化模型
     net = setup_model(cfg)

@@ -21,6 +21,11 @@ from accelerate.logging import get_logger
 from aim import Run, Image
 
 from src.data.dataloader import get_dataloader
+from src.data.dataloader import (
+    estimate_wds_shard_clip_counts,
+    build_balanced_clip_segments,
+    get_segmented_wds_dataloader,
+)
 from src.data.depth_bin_dataloader import (
     collect_depth_bin_sources,
     collect_depth_bin_cell_sources,
@@ -122,7 +127,7 @@ def manage_checkpoints(output_dir, keep_last_n=3):
                 # print(f"Deleted old checkpoint: {path_to_del}")
 
 
-def setup_dataloader(cfg: DictConfig):
+def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None):
     train_sampling_cfg = cfg.DATA.train.get("sampling", {})
     train_depth_bin_cfg = cfg.DATA.train.get("depth_bins", {})
 
@@ -226,21 +231,53 @@ def setup_dataloader(cfg: DictConfig):
         matched_files = glob.glob(src)
         matched_files = sorted(matched_files)
         val_sources.extend(matched_files)
-    val_loader = get_dataloader(
-        url=val_sources,
-        num_frames=cfg.MODEL.num_frame,
-        stride=cfg.DATA.val.stride,
-        batch_size=cfg.TRAIN.sample_per_device,
-        num_workers=1, # cfg.GENERAL.num_worker,
-        prefetcher_factor=cfg.GENERAL.prefetch_factor,
-        infinite=True,
-        seed=cfg.GENERAL.get("val_seed", 42),  # 固定验证顺序，在线验证可复现
-        clip_sampling_mode=val_sampling_cfg.get("mode", "dense"),
-        clips_per_sequence=val_sampling_cfg.get("clips_per_sequence", None),
-        shardshuffle=val_sampling_cfg.get("shardshuffle", False),
-        post_clip_shuffle=val_sampling_cfg.get("post_clip_shuffle", 200),
-    )
-    logger.info(f"setup val loader: {val_sources}")
+    if cfg.DATA.val.get("full_eval", False):
+        if accelerator is None:
+            raise ValueError("full_eval val requires accelerator for shard partitioning")
+        shard_clip_counts_obj = [None]
+        if accelerator.is_main_process:
+            shard_clip_counts_obj[0] = estimate_wds_shard_clip_counts(
+                urls=val_sources,
+                num_frames=cfg.MODEL.num_frame,
+                stride=cfg.DATA.val.stride,
+            )
+        broadcast_object_list(shard_clip_counts_obj, from_process=0)
+        shard_clip_counts = shard_clip_counts_obj[0]
+        rank_segments = build_balanced_clip_segments(
+            urls=val_sources,
+            clip_counts=shard_clip_counts,
+            num_parts=accelerator.num_processes,
+        )
+        process_segments = rank_segments[accelerator.process_index]
+        val_loader = get_segmented_wds_dataloader(
+            segments=process_segments,
+            num_frames=cfg.MODEL.num_frame,
+            stride=cfg.DATA.val.stride,
+            batch_size=cfg.TRAIN.sample_per_device,
+            num_workers=0,
+            prefetcher_factor=cfg.GENERAL.prefetch_factor,
+        )
+        logger.info(
+            f"setup full-eval val loader: process={accelerator.process_index}/{accelerator.num_processes} "
+            f"segments={len(process_segments)} total_shards={len(val_sources)} "
+            f"clip_counts={shard_clip_counts}"
+        )
+    else:
+        val_loader = get_dataloader(
+            url=val_sources,
+            num_frames=cfg.MODEL.num_frame,
+            stride=cfg.DATA.val.stride,
+            batch_size=cfg.TRAIN.sample_per_device,
+            num_workers=1, # cfg.GENERAL.num_worker,
+            prefetcher_factor=cfg.GENERAL.prefetch_factor,
+            infinite=True,
+            seed=cfg.GENERAL.get("val_seed", 42),  # 固定验证顺序，在线验证可复现
+            clip_sampling_mode=val_sampling_cfg.get("mode", "dense"),
+            clips_per_sequence=val_sampling_cfg.get("clips_per_sequence", None),
+            shardshuffle=val_sampling_cfg.get("shardshuffle", False),
+            post_clip_shuffle=val_sampling_cfg.get("post_clip_shuffle", 200),
+        )
+        logger.info(f"setup val loader: {val_sources}")
 
     return train_loader, val_loader
 
@@ -345,12 +382,12 @@ def val(
     metric_meter = StreamingMetricMeter()
 
     if limit_step is None:
-        raise ValueError("在线 val 必须提供 limit_step，以保证各进程严格同步")
+        iter_wrapper = val_loader
+    else:
+        val_iter = iter(val_loader)
+        iter_wrapper = (next(val_iter) for _ in range(limit_step))
 
-    val_iter = iter(val_loader)
-
-    for ix in range(limit_step):
-        batch_ = next(val_iter)
+    for ix, batch_ in enumerate(iter_wrapper):
 
         batch, trans_2d_mat, _ = preprocess_batch(
             batch_origin=batch_,
@@ -606,12 +643,13 @@ def train(
                 # 4. 验证集测试
                 if global_step % checkpoint_step == 0:
                     logger.info("validating...")
+                    val_limit_step = None if cfg.DATA.val.get("full_eval", False) else cfg.DATA.val.get("max_val_step", 1000)
                     val_result = val(
                         cfg,
                         accelerator,
                         net,
                         val_loader,
-                        cfg.DATA.val.get("max_val_step", 1000),
+                        val_limit_step,
                         global_step,
                         aim_run
                     )
@@ -804,7 +842,7 @@ def main(cfg: DictConfig):
     set_seed(cfg.GENERAL.seed)
 
     # 3. 获取dataloader
-    train_loader, val_loader = setup_dataloader(cfg)
+    train_loader, val_loader = setup_dataloader(cfg, accelerator)
 
     # 4. 获取模型
     net = setup_model(cfg)

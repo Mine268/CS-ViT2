@@ -12,6 +12,11 @@
   - 故障排查
 
 ### 详细说明
+- **[CHECKPOINT_TEST_WORKFLOW.md](CHECKPOINT_TEST_WORKFLOW.md)** - 指定 checkpoint 在指定数据集上的单卡测试流程
+  - 如何用 `script.test` 运行单卡测试
+  - 如何用 `script.evaluate` 计算完整指标
+  - HO3D / DexYCB / IH26M 的直接命令模板
+
 - **[DEPTH_BIN_REPACK.md](DEPTH_BIN_REPACK.md)** - depth-bin 数据重整方案
   - 对每个 dataset/bin 单独 repack
   - 新目录重整后替换旧目录
@@ -41,6 +46,10 @@
   - 为什么训练不再枚举全部滑窗
   - `random_clip` 与 `dense` 的分工
   - 如何提升 batch 内随机性且避免爆内存
+
+- **[tests/test_full_val_partition.py](../tests/test_full_val_partition.py)** - 完整 val 的 shard/clip 均衡分配测试
+  - 验证多卡完整 val 的 clip 分配逻辑
+  - 覆盖 tar 数小于 GPU 数时的边界情况
 
 - **[IMPROVEMENTS_SUMMARY.md](IMPROVEMENTS_SUMMARY.md)** - 训练优化改进总结
   - 问题分析和诊断

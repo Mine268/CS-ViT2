@@ -3,11 +3,14 @@ Webdataset Dataloader
 """
 from typing import *
 from functools import partial
+from dataclasses import dataclass
+import json
+import tarfile
 import numpy as np
 import webdataset as wds
 
 import torch
-from torch.utils.data import DataLoader, get_worker_info
+from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 import torchvision
 
 import kornia.geometry.transform as T
@@ -33,6 +36,13 @@ COLLATE_LIST_KEYS = [
     "imgs", "handedness", "__key__"
 ]
 
+
+@dataclass(frozen=True)
+class ClipSegment:
+    tar_path: str
+    start_clip: int
+    end_clip: int
+
 def _build_sub_sample(sample, start: int, end: int, clip_idx: int):
     imgs_path = sample["imgs_path.json"]
     img_list = sample["img_bytes.pickle"]
@@ -52,6 +62,11 @@ def _build_sub_sample(sample, start: int, end: int, clip_idx: int):
     return sub_sample
 
 
+def count_sample_clips(total_frames: int, num_frames: int, stride: int) -> int:
+    total_clips = (total_frames - num_frames) // stride + 1
+    return max(0, total_clips)
+
+
 def _select_clip_indices(
     total_frames: int,
     num_frames: int,
@@ -60,7 +75,7 @@ def _select_clip_indices(
     clips_per_sequence: Optional[int],
     rng: np.random.Generator,
 ) -> List[int]:
-    total_clips = (total_frames - num_frames) // stride + 1
+    total_clips = count_sample_clips(total_frames, num_frames, stride)
     if total_clips <= 0:
         return []
 
@@ -121,6 +136,132 @@ def clip_to_t_frames(
             start = int(clip_idx) * stride
             end = start + num_frames
             yield _build_sub_sample(sample, start, end, int(clip_idx))
+
+
+def estimate_wds_shard_clip_counts(
+    urls: Sequence[str],
+    num_frames: int,
+    stride: int,
+) -> List[int]:
+    clip_counts: List[int] = []
+    for url in urls:
+        shard_clip_count = 0
+        with tarfile.open(url, "r") as tf:
+            for member in tf:
+                if not member.isfile() or not member.name.endswith("imgs_path.json"):
+                    continue
+                file_obj = tf.extractfile(member)
+                if file_obj is None:
+                    continue
+                imgs_path = json.load(file_obj)
+                shard_clip_count += count_sample_clips(len(imgs_path), num_frames, stride)
+        clip_counts.append(shard_clip_count)
+    return clip_counts
+
+
+def build_balanced_clip_segments(
+    urls: Sequence[str],
+    clip_counts: Sequence[int],
+    num_parts: int,
+) -> List[List[ClipSegment]]:
+    if len(urls) != len(clip_counts):
+        raise ValueError(
+            f"urls and clip_counts length mismatch: {len(urls)} vs {len(clip_counts)}"
+        )
+    if num_parts <= 0:
+        raise ValueError(f"num_parts must be positive, got {num_parts}")
+
+    total_clips = int(sum(clip_counts))
+    assignments: List[List[ClipSegment]] = [[] for _ in range(num_parts)]
+    if total_clips <= 0:
+        return assignments
+
+    part_ranges = [
+        (total_clips * rank // num_parts, total_clips * (rank + 1) // num_parts)
+        for rank in range(num_parts)
+    ]
+
+    clip_cursor = 0
+    for url, shard_clip_count in zip(urls, clip_counts):
+        shard_start = clip_cursor
+        shard_end = clip_cursor + int(shard_clip_count)
+        clip_cursor = shard_end
+        if shard_clip_count <= 0:
+            continue
+
+        for rank, (part_start, part_end) in enumerate(part_ranges):
+            overlap_start = max(shard_start, part_start)
+            overlap_end = min(shard_end, part_end)
+            if overlap_start >= overlap_end:
+                continue
+            assignments[rank].append(
+                ClipSegment(
+                    tar_path=url,
+                    start_clip=overlap_start - shard_start,
+                    end_clip=overlap_end - shard_start,
+                )
+            )
+
+    return assignments
+
+
+class WDSClipSegmentDataset(IterableDataset):
+    def __init__(
+        self,
+        segments: Sequence[ClipSegment],
+        num_frames: int,
+        stride: int,
+    ):
+        super().__init__()
+        self.segments = list(segments)
+        self.num_frames = num_frames
+        self.stride = stride
+
+    def __iter__(self):
+        for segment in self.segments:
+            dataset = wds.WebDataset(
+                [segment.tar_path],
+                shardshuffle=False,
+                nodesplitter=lambda src: src,
+                workersplitter=lambda src: src,
+            ).decode()
+            clip_cursor = 0
+            for sample in dataset:
+                total_frames = len(sample["img_bytes.pickle"])
+                total_clips = count_sample_clips(total_frames, self.num_frames, self.stride)
+                local_start = max(0, segment.start_clip - clip_cursor)
+                local_end = min(total_clips, segment.end_clip - clip_cursor)
+                if local_start < local_end:
+                    for clip_idx in range(local_start, local_end):
+                        start = clip_idx * self.stride
+                        end = start + self.num_frames
+                        yield preprocess_frame(_build_sub_sample(sample, start, end, int(clip_idx)))
+                clip_cursor += total_clips
+                if clip_cursor >= segment.end_clip:
+                    break
+
+
+def get_segmented_wds_dataloader(
+    segments: Sequence[ClipSegment],
+    num_frames: int,
+    stride: int,
+    batch_size: int,
+    num_workers: int,
+    prefetcher_factor: int,
+):
+    dataset = WDSClipSegmentDataset(
+        segments=segments,
+        num_frames=num_frames,
+        stride=stride,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        prefetch_factor=prefetcher_factor if num_workers > 0 else None,
+        collate_fn=collate_fn,
+        pin_memory=False,
+    )
 
 def preprocess_frame(sample):
     """将图像二进制流转换为图片"""

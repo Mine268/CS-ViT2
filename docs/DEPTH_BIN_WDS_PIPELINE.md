@@ -281,3 +281,41 @@ color_jitter:
 ```
 
 目的是先稳定绝对几何学习，再观察 depth-bin 采样本身带来的收益。
+
+## 13. 完整 val 的多卡处理
+
+当前训练脚本支持两种 val 模式：
+
+### 13.1 在线代理验证（默认）
+
+```yaml
+DATA:
+  val:
+    full_eval: false
+    max_val_step: 1000
+```
+
+- `val_loader` 使用 `infinite=True`
+- 每个 rank 严格跑固定步数
+- 适合训练中高频监控，不容易出现多卡不同步问题
+
+### 13.2 完整 full val
+
+```yaml
+DATA:
+  val:
+    full_eval: true
+```
+
+完整 full val 的实现方式：
+
+1. 启动训练时先统计每个 val tar 在当前 `num_frame/stride` 下可展开的 clip 数
+2. 按 clip 数把 tar（必要时切成片段）尽量均衡分给各个 rank
+3. 每个 rank 只验证自己那部分样本
+4. 最后只对标量统计量做 `reduce`
+
+这样可以保证：
+
+- 完整 val：每个 sample 恰好一次
+- 多卡加速：不同 rank 负载更均衡
+- tar 数量少于 GPU 数量时也能工作

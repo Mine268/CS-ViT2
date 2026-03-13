@@ -87,6 +87,7 @@ DATA:
       /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/val/*,
     ]
     stride: 1
+    full_eval: false
     max_val_step: 1000
     sampling:
       mode: dense
@@ -95,6 +96,7 @@ DATA:
   test:
     source: []  # 默认为空，通过命令行指定
     stride: 1   # 测试时的帧采样步长
+    full_eval: false
     sampling:
       mode: dense
       shardshuffle: false
