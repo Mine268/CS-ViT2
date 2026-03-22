@@ -88,7 +88,13 @@ class PoseNet(nn.Module):
         )
         self.register_buffer("img_mean", torch.Tensor(img_mean))
         self.register_buffer("img_std", torch.Tensor(img_std))
-        self.drop_cls = drop_cls
+        self.has_cls_token = self.backbone.get_has_cls_token()
+        if drop_cls and not self.has_cls_token:
+            logger.warning(
+                "drop_cls=True is ignored because backbone=%s has no cls token.",
+                backbone_str,
+            )
+        self.drop_cls = drop_cls and self.has_cls_token
         self.patch_size = self.backbone.get_patch_size()
         self.hidden_size = self.backbone.get_hidden_size()
         self.img_size = self.backbone.get_img_size()
@@ -105,7 +111,7 @@ class PoseNet(nn.Module):
             self.persp_info_embedder = PerspInfoEmbedderCrossAttn(
                 hidden_size=self.hidden_size,
                 num_sample=num_pie_sample,
-                num_token=self.num_patch**2 + int(not self.drop_cls),
+                num_token=self.num_patch**2 + int(self.has_cls_token and not self.drop_cls),
             )
         else:
             raise NotImplementedError(f"pie_type={pie_type} not implemented.")

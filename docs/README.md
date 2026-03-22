@@ -93,6 +93,12 @@
   - Delta 参数建议
   - 效果对比
 
+- **[SWINV2_BACKBONE_COMPAT.md](SWINV2_BACKBONE_COMPAT.md)** - SwinV2 backbone 兼容说明
+  - `SwinV2` 无 `cls token` 的输出差异
+  - 为什么 `num_patch` 要按最终 stage token grid 计算
+  - `stage1-swinv2_large.yaml` 的推荐配置
+  - `infusion_layer=null` 的当前限制
+
 ### 更新日志
 - **[CHANGELOG_2026-02-10.md](CHANGELOG_2026-02-10.md)** - 2026-02-10 更新日志
   - Stage 2 致命 bug 修复总结
@@ -177,6 +183,7 @@
 **最后更新**: 2026-03-22
 
 **重要更新**:
+- 2026-03-22: 增加 `swinv2-large-patch4-window12-192-22k` backbone 兼容代码和 `stage1-swinv2_large.yaml`
 - 2026-03-22: 增加 `COCO-WholeBody` 专用 2D patch auxiliary loss，并在 val/test/evaluate 中显式排除 COCO 的 3D 指标统计
 - 2026-03-22: 完成四个已用数据集到 `webdatasets2` 的 V2 迁移，并补充 temp/ 验证产物与状态文档
 - 2026-03-07: 增加 depth-bin repack 脚本与说明

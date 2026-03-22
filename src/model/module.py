@@ -242,8 +242,13 @@ class ViTBackbone(nn.Module):
 
         # read model config
         backbone_cfg = transformers.AutoConfig.from_pretrained(self.backbone_str)
+        self.model_type = backbone_cfg.model_type
+        self.has_cls_token = self.model_type not in {"swin", "swinv2"}
         self.patch_size = backbone_cfg.patch_size
         self.hidden_size = backbone_cfg.hidden_size
+        self.feature_stride = getattr(backbone_cfg, "encoder_stride", None)
+        if self.feature_stride is None:
+            self.feature_stride = self.patch_size
         if self.img_size is None:
             self.img_size = backbone_cfg.image_size
             logger.info("No img_size provided for backbone. "
@@ -257,7 +262,21 @@ class ViTBackbone(nn.Module):
         assert (
             self.img_size % self.patch_size == 0
         ), f"img_size={self.img_size} and patch_size={self.patch_size} is not consistent."
-        self.num_patch = self.img_size // self.patch_size
+        assert (
+            self.img_size % self.feature_stride == 0
+        ), (
+            f"img_size={self.img_size} and feature_stride={self.feature_stride} "
+            f"is not consistent for backbone={self.backbone_str}."
+        )
+        self.num_patch = self.img_size // self.feature_stride
+
+        if self.infusion_feats_lyr is not None and not self.has_cls_token:
+            logger.warning(
+                "Backbone %s does not use cls token and has hierarchical hidden states. "
+                "Please set backbone.infusion_layer=null unless the selected hidden states "
+                "share the same token grid size as the final stage.",
+                self.backbone_str,
+            )
 
         # backbone
         self.backbone = transformers.AutoModel.from_pretrained(
@@ -315,8 +334,31 @@ class ViTBackbone(nn.Module):
             hidden_states = backbone_output.hidden_states
             hidden_states = [hidden_states[i] for i in self.infusion_feats_lyr]
             token_clss, token_patches = [], []
+            expected_patch_token_count = self.num_patch ** 2
             for l in range(len(self.infusion_feats_lyr)):
-                token_cls, token_patch = hidden_states[l][:, 0], hidden_states[l][:, 1:]
+                hidden_state = hidden_states[l]
+                if self.has_cls_token:
+                    expected_token_count = expected_patch_token_count + 1
+                    if hidden_state.shape[1] != expected_token_count:
+                        raise ValueError(
+                            f"Hidden state index={self.infusion_feats_lyr[l]} from "
+                            f"backbone={self.backbone_str} has token_count={hidden_state.shape[1]}, "
+                            f"expected={expected_token_count}. "
+                            "If you are using a hierarchical backbone, set "
+                            "backbone.infusion_layer=null."
+                        )
+                    token_cls, token_patch = hidden_state[:, 0], hidden_state[:, 1:]
+                else:
+                    if hidden_state.shape[1] != expected_patch_token_count:
+                        raise ValueError(
+                            f"Hidden state index={self.infusion_feats_lyr[l]} from "
+                            f"backbone={self.backbone_str} has token_count={hidden_state.shape[1]}, "
+                            f"expected={expected_patch_token_count}. "
+                            "For Swin/SwinV2, only select hidden states that match the "
+                            "final-stage grid, or set backbone.infusion_layer=null."
+                        )
+                    token_cls = torch.mean(hidden_state, dim=1)
+                    token_patch = hidden_state
                 token_patch = eps.rearrange(token_patch, "b (h w) c -> b c h w", h=self.num_patch)
                 token_cls = self.projection_cls[l](token_cls)
                 token_patch = self.projections_map[l](token_patch)
@@ -327,7 +369,10 @@ class ViTBackbone(nn.Module):
             token_clss = self.fusion_cls(token_clss)
             token_patches = self.fusion_conv(token_patches)
             token_patches = eps.rearrange(token_patches, "b c h w -> b (h w) c")
-            hidden_state = torch.cat([token_clss[:, None], token_patches], dim=1)
+            if self.has_cls_token:
+                hidden_state = torch.cat([token_clss[:, None], token_patches], dim=1)
+            else:
+                hidden_state = token_patches
         else:
             hidden_state = backbone_output.last_hidden_state
 
@@ -347,6 +392,9 @@ class ViTBackbone(nn.Module):
 
     def get_num_patch(self):
         return self.num_patch
+
+    def get_has_cls_token(self):
+        return self.has_cls_token
 
 
 class CausalTRoPESelfAttention(nn.Module):

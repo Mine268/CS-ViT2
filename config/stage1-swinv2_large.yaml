@@ -1,0 +1,152 @@
+defaults:
+  - _self_
+  - augmentation: default
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job_logging:
+    root:
+      handlers: []
+
+AIM:
+  server_url: aim://10.208.33.93:53800
+
+GENERAL:
+  description: ""
+  total_step: 100000
+  log_step: 10
+  vis_step: 100
+  checkpoint_step: 3000
+  warmup_step: 5000
+  dropout_warmup_step: 10000
+  cosine_cycle: 0.4
+  num_worker: 4
+  prefetch_factor: 1
+  seed: 3229084
+  val_seed: 42
+  resume_path: null
+
+TEST:
+  output_dir: output/test_results
+  batch_size: 8
+  save_format: hdf5
+  compression: gzip
+  max_samples: null
+  vis_step: 100
+  enable_vis: true
+  checkpoint_path: null
+
+TRAIN:
+  lr: 1e-4
+  backbone_lr: 1e-5
+  grad_accum_step: 1
+  max_grad: 1.0
+  weight_decay: 1e-4
+  sample_per_device: 16
+  mixed_precision: "bf16"
+  expansion_ratio: 2.0
+  scale_z_range: [0.9, 1.1]
+  scale_f_range: [0.9, 1.1]
+  persp_rot_max: 0.0
+  perspective_normalization: false
+  augmentation: ${augmentation}
+
+DATA:
+  train:
+    source: [
+      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*
+    ]
+    stride: 1
+    depth_bins:
+      enabled: false
+      root: /mnt/qnap/data/datasets/webdatasets/depth-bins
+      dataset_names: []
+      split: train
+      selected_bins: null
+      mix_strategy: uniform_random
+      bin_weights: null
+      dataset_balance_alpha: 0.5
+      min_cell_samples: 1000
+      shardshuffle: false
+      sample_shuffle: 200
+    sampling:
+      mode: random_clip
+      clips_per_sequence: 1
+      shardshuffle: 32
+      post_clip_shuffle: 512
+  val:
+    source: [
+      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/val/*,
+      /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/val/*,
+    ]
+    stride: 1
+    full_eval: false
+    max_val_step: 1000
+    sampling:
+      mode: dense
+      shardshuffle: false
+      post_clip_shuffle: 0
+  test:
+    source: []
+    stride: 1
+    full_eval: false
+    sampling:
+      mode: dense
+      shardshuffle: false
+      post_clip_shuffle: 0
+
+MODEL:
+  img_size: 192
+  img_mean: [0.485, 0.456, 0.406]
+  img_std: [0.229, 0.224, 0.225]
+  stage: stage1
+  stage1_weight: null
+  num_frame: 1
+  joint_type: "3"
+  norm_by_hand: true
+  backbone:
+    backbone_str: model/microsoft/swinv2-large-patch4-window12-192-22k
+    infusion_layer: null
+    drop_cls: false
+    kwargs: {}
+  handec:
+    num_layer: 4
+    num_head: 24
+    dim_head: 64
+    dim_mlp: 6144
+    dropout: 0.1
+    norm: layer
+    context_dim: 1536
+    skip_token_embed: false
+    use_mean_init: false
+    denorm_output: false
+    heatmap_resolution: [512, 512, 1024]
+  persp_info_embed:
+    type: "ca"
+    num_sample: 8
+    pie_fusion: "all"
+  temporal_encoder:
+    num_layer: 2
+    num_head: 24
+    trope_scalar: 20.0
+    zero_linear: true
+
+LOSS:
+  lambda_theta: 3.0
+  lambda_shape: 3.0
+  lambda_trans: 0.05
+  lambda_rel: 0.012
+  lambda_img: 0.002
+  lambda_coco_patch_2d: 0.0005
+  supervise_global: true
+  supervise_heatmap: true
+  heatmap_sigma: 0.09
+  reproj_loss_type: "l1"
+  reproj_loss_delta: 84.0

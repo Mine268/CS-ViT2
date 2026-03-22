@@ -47,6 +47,7 @@ CS-ViT2/
 │   └── evaluate.py              # 评估脚本
 ├── config/                       # Hydra 配置文件
 │   ├── stage1-dino_large.yaml   # Stage 1 配置
+│   ├── stage1-swinv2_large.yaml # Stage 1 SwinV2-Large 配置
 │   ├── stage2-dino_large.yaml   # Stage 2 配置
 │   └── augmentation/            # 数据增强配置
 ├── tests/                        # 单元测试
@@ -79,6 +80,9 @@ accelerate config
 ```bash
 # 基础训练
 python script/train.py --config-name=stage1-dino_large
+
+# SwinV2-Large 训练
+python script/train.py --config-name=stage1-swinv2_large
 
 # 多 GPU 训练
 accelerate launch --main_process_port 0 --gpu_ids 0,1,2,3 --num_processes 4 -m script.train \
@@ -151,6 +155,10 @@ pytest tests/ -v -s
 - 输出: MANO 参数（每帧独立）
 - 训练模块: Backbone + PerspInfoEmbedder + HandDecoder
 - 配置: `MODEL.stage=stage1`, `MODEL.num_frame=1`
+
+补充：
+- `stage1-dino_large.yaml` 默认输入 patch 为 `224 x 224`
+- `stage1-swinv2_large.yaml` 默认输入 patch 为 `192 x 192`
 
 **Stage 2 (时序)**:
 - 输入: 图像序列 [B, T, 3, 224, 224] (T=7 帧)
@@ -253,6 +261,29 @@ WebDataset 格式 (`.tar` 文件)，每个样本包含:
    - `true`: 按手部大小归一化坐标（更稳定）
    - `false`: 使用原始相机坐标
 
+10. **COCO-WholeBody 当前接入状态**:
+   - 当前只作为 `Stage 1` 的 `2D-only` 数据使用
+   - 训练侧已接入 `COCO-WholeBody` 专用 `2D patch auxiliary loss`
+   - `val/test/evaluate` 会显式排除 `COCO-WholeBody` 参与 3D 指标统计
+   - 当前若训练源包含 `COCO-WholeBody`，必须设置 `MODEL.norm_by_hand=false`
+
+11. **SwinV2 当前兼容状态**:
+   - 推荐配置为 `config/stage1-swinv2_large.yaml`
+   - `model/microsoft/swinv2-large-patch4-window12-192-22k` 的 `MODEL.img_size=192`
+   - `MODEL.handec.context_dim=1536`
+   - 当前推荐 `MODEL.backbone.infusion_layer=null`
+   - 原因是 `SwinV2` 不同 stage 的 token 分辨率不同，现有多层融合逻辑默认各层 token grid 一致
+
+12. **SwinV2 输入 patch**:
+   - `192 x 192` 是手部 patch 的输入尺寸
+   - 该尺寸由 `src/data/preprocess.py` 在裁手后 resize 得到
+   - 不是将原图整张直接送入 backbone
+
+13. **文档导读**:
+   - `docs/README.md`
+   - `docs/COCO_WHOLEBODY_INTEGRATION.md`
+   - `docs/SWINV2_BACKBONE_COMPAT.md`
+
 ## 检查点结构
 
 ```
@@ -271,6 +302,12 @@ checkpoint/<date>/<time>_<config>_<hash>/
 
 **Q: 如何切换骨干网络？**
 A: 修改配置文件中的 `MODEL.backbone.backbone_str`，并确保模型已下载到 `model/<org>/<model-name>/`，同时调整 `MODEL.handec.context_dim` 匹配骨干输出维度。
+
+补充：
+1. `DINOv2 / MAE` 可以继续使用 ViT 风格的 `infusion_layer`
+2. `SwinV2` 当前推荐直接使用 `config/stage1-swinv2_large.yaml`
+3. 对 `SwinV2`，当前建议 `MODEL.backbone.infusion_layer=null`
+4. 如果后续要做 SwinV2 的多层融合，需要单独设计跨 stage 分辨率对齐逻辑
 
 **Q: 如何添加新数据集？**
 A:
