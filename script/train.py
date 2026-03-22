@@ -44,6 +44,18 @@ logger = get_logger(__name__)
 save_dir = None
 
 
+def _has_coco_wholebody_source(source_list: Sequence[str]) -> bool:
+    return any("COCO-WholeBody" in str(source) for source in source_list)
+
+
+def assert_coco_wholebody_training_compat(cfg: DictConfig):
+    train_sources = cfg.DATA.train.get("source", [])
+    if _has_coco_wholebody_source(train_sources) and cfg.MODEL.get("norm_by_hand", False):
+        raise AssertionError(
+            "COCO-WholeBody training currently requires MODEL.norm_by_hand=false."
+        )
+
+
 def save_best_model_variant(
     accelerator: Accelerator,
     output_dir: str,
@@ -328,6 +340,7 @@ def setup_model(cfg: DictConfig):
         lambda_trans=cfg.LOSS.get("lambda_trans", 0.123),
         lambda_rel=cfg.LOSS.get("lambda_rel", 0.000305),
         lambda_img=cfg.LOSS.get("lambda_img", 0.00512),
+        lambda_coco_patch_2d=cfg.LOSS.get("lambda_coco_patch_2d", 0.0),
         hm_sigma=cfg.LOSS.get("heatmap_sigma", 3),
         reproj_loss_type=cfg.LOSS.get("reproj_loss_type", "robust_l1"),
         reproj_loss_delta=cfg.LOSS.get("reproj_loss_delta", 84.0),
@@ -423,19 +436,27 @@ def val(
         else:
             norm_valid = torch.ones(joint_3d_valid.shape[:2], device=joint_3d_valid.device)
 
+        keep_mask_np = build_excluded_data_source_mask(batch.get("data_source"))
+        if keep_mask_np is None:
+            keep_mask = torch.ones(joint_3d_valid.shape[0], device=device, dtype=torch.bool)
+        else:
+            keep_mask = torch.as_tensor(keep_mask_np, device=device, dtype=torch.bool)
+        if not torch.any(keep_mask):
+            continue
+
         # 计算指标
         metric_meter.update(
-            joint_cam_gt,
-            joint_rel_gt,
-            verts_cam_gt,
-            verts_rel_gt,
-            joint_cam_pred,
-            joint_rel_pred,
-            verts_cam_pred,
-            verts_rel_pred,
-            has_mano,
-            joint_3d_valid,
-            norm_valid,
+            joint_cam_gt[keep_mask],
+            joint_rel_gt[keep_mask],
+            verts_cam_gt[keep_mask],
+            verts_rel_gt[keep_mask],
+            joint_cam_pred[keep_mask],
+            joint_rel_pred[keep_mask],
+            verts_cam_pred[keep_mask],
+            verts_rel_pred[keep_mask],
+            has_mano[keep_mask],
+            joint_3d_valid[keep_mask],
+            norm_valid[keep_mask],
         )
 
         # 进行可视化
@@ -788,6 +809,8 @@ def main(cfg: DictConfig):
         handlers=[RichHandler(rich_tracebacks=True)],
         force=True,
     )
+
+    assert_coco_wholebody_training_compat(cfg)
 
     save_dir_obj = [None]
     aim_run = None

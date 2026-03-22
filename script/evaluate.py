@@ -17,6 +17,8 @@ import numpy as np
 from rich.console import Console
 from rich.table import Table
 
+from src.utils.metric import build_excluded_data_source_mask
+
 
 console = Console()
 
@@ -40,12 +42,28 @@ def compute_metrics(h5_path: str) -> Dict[str, float]:
         vert_cam_gt = f['samples/vert_cam_gt'][:]
         joint_3d_valid = f['samples/joint_3d_valid'][:]
         has_mano = f['samples/has_mano'][:]
+        data_source = (
+            f['samples/data_source'][:]
+            if 'data_source' in f['samples']
+            else None
+        )
 
         num_samples = f['metadata'].attrs['num_samples']
         norm_by_hand = f['metadata'].attrs.get('norm_by_hand', False)
 
     console.print(f"[green]✓[/green] Loaded {num_samples} samples")
     console.print(f"[dim]  norm_by_hand: {norm_by_hand}[/dim]")
+
+    keep_mask = build_excluded_data_source_mask(data_source)
+    excluded_coco_samples = 0
+    if keep_mask is not None:
+        excluded_coco_samples = int(len(keep_mask) - np.sum(keep_mask))
+        joint_cam_pred = joint_cam_pred[keep_mask]
+        joint_cam_gt = joint_cam_gt[keep_mask]
+        vert_cam_pred = vert_cam_pred[keep_mask]
+        vert_cam_gt = vert_cam_gt[keep_mask]
+        joint_3d_valid = joint_3d_valid[keep_mask]
+        has_mano = has_mano[keep_mask]
 
     joint_valid_count = float(np.sum(joint_3d_valid))
     mano_valid_count = float(np.sum(has_mano))
@@ -77,7 +95,9 @@ def compute_metrics(h5_path: str) -> Dict[str, float]:
         "mpvpe": mpvpe,
         "rel_mpjpe": rel_mpjpe,
         "rel_mpvpe": rel_mpvpe,
-        "num_samples": int(num_samples),
+        "num_samples": int(joint_cam_pred.shape[0]),
+        "num_samples_total": int(num_samples),
+        "num_excluded_coco_wholebody": excluded_coco_samples,
         "num_valid_joints": int(joint_valid_count),
         "num_valid_hands": int(mano_valid_count),
         "norm_by_hand": bool(norm_by_hand),
@@ -98,6 +118,8 @@ def print_metrics(metrics: Dict[str, float]):
 
     table.add_section()
     table.add_row("Num Samples", str(metrics['num_samples']))
+    table.add_row("Total Samples", str(metrics.get('num_samples_total', metrics['num_samples'])))
+    table.add_row("Excluded COCO", str(metrics.get('num_excluded_coco_wholebody', 0)))
     table.add_row("Valid Joints", str(metrics['num_valid_joints']))
     table.add_row("Valid Hands", str(metrics['num_valid_hands']))
     table.add_row("norm_by_hand", str(metrics['norm_by_hand']))

@@ -17,6 +17,12 @@
   - `loss / norm / metric / test / evaluate` 的新 valid 语义
   - `temp/` 下的验证产物路径
 
+- **[COCO_WHOLEBODY_INTEGRATION.md](COCO_WHOLEBODY_INTEGRATION.md)** - COCO-WholeBody 接入约束与 loss 设计
+  - `COCO-WholeBody` 目前只作为 `2D-only` 数据使用
+  - `lambda_coco_patch_2d` 的作用与默认值
+  - `norm_by_hand=false` 的当前限制
+  - 为什么 `val/test/evaluate` 要显式排除 COCO 参与 3D 指标
+
 - **[CHECKPOINT_TEST_WORKFLOW.md](CHECKPOINT_TEST_WORKFLOW.md)** - 指定 checkpoint 在指定数据集上的单卡测试流程
   - 如何用 `script.test` 运行单卡测试
   - 如何用 `script.evaluate` 计算完整指标
@@ -171,6 +177,7 @@
 **最后更新**: 2026-03-22
 
 **重要更新**:
+- 2026-03-22: 增加 `COCO-WholeBody` 专用 2D patch auxiliary loss，并在 val/test/evaluate 中显式排除 COCO 的 3D 指标统计
 - 2026-03-22: 完成四个已用数据集到 `webdatasets2` 的 V2 迁移，并补充 temp/ 验证产物与状态文档
 - 2026-03-07: 增加 depth-bin repack 脚本与说明
 - 2026-03-07: 同步 depth-bins 外部目录 README 到 docs

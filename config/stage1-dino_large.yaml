@@ -145,6 +145,7 @@ LOSS:
   lambda_trans: 0.05      # 提高根关节loss权重 (0.025 → 0.05)
   lambda_rel: 0.012       # 降低相对关节loss权重 (0.015 → 0.012)
   lambda_img: 0.002
+  lambda_coco_patch_2d: 0.0005
   supervise_global: true
   supervise_heatmap: true
   heatmap_sigma: 0.09     # normalized by hand, 保持不变

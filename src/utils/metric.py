@@ -1,4 +1,45 @@
+from typing import Any, Iterable, Optional, Set
+
+import numpy as np
 import torch
+
+
+def _normalize_data_source_value(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return _normalize_data_source_value(value.item())
+        raise ValueError(f"Expected scalar data_source entry, got shape={value.shape}")
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return ""
+        if len(value) == 1:
+            return _normalize_data_source_value(value[0])
+    return str(value)
+
+
+def build_excluded_data_source_mask(
+    data_sources: Optional[Iterable[Any]],
+    excluded_sources: Optional[Set[str]] = None,
+):
+    """
+    为 data_source 序列构造保留掩码，默认排除 COCO-WholeBody。
+
+    Returns:
+        np.ndarray[bool] 或 None
+    """
+    if data_sources is None:
+        return None
+
+    if excluded_sources is None:
+        excluded_sources = {"COCO-WholeBody"}
+
+    normalized = [_normalize_data_source_value(value) for value in data_sources]
+    return np.array(
+        [value not in excluded_sources for value in normalized],
+        dtype=bool,
+    )
 
 
 def compute_mpjpe_stats(

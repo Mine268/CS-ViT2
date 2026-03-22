@@ -1,0 +1,45 @@
+{
+  "train_cli_smoke": {
+    "run_dir": "checkpoint/2026-03-22/14-26-09_stage1-dino_large_1f9983d8517a45c29be1b3d3",
+    "checkpoint_path": "checkpoint/2026-03-22/14-26-09_stage1-dino_large_1f9983d8517a45c29be1b3d3/checkpoints/checkpoint-1",
+    "config_name": "stage1-dino_large",
+    "train_source": "/mnt/qnap/data/datasets/webdatasets2/COCO-WholeBody/train/000000.tar",
+    "total_step": 1,
+    "model_norm_by_hand": false
+  },
+  "val_smoke": {
+    "source": "/mnt/qnap/data/datasets/webdatasets2/COCO-WholeBody/val/000000.tar",
+    "limit_step": 1,
+    "metrics": {
+      "micro_mpjpe": 0.0,
+      "micro_mpjpe_rel": 0.0,
+      "micro_mpvpe": 0.0,
+      "micro_mpvpe_rel": 0.0,
+      "micro_rte": 0.0
+    },
+    "note": "COCO-only val is excluded from 3D metrics by design"
+  },
+  "test_smoke": {
+    "source": "/mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/val/000000.tar",
+    "max_samples": 2,
+    "output_dir": "checkpoint/2026-03-22/14-26-09_stage1-dino_large_1f9983d8517a45c29be1b3d3/checkpoints/test_results_2026-03-22_14-31-16",
+    "predictions_h5": "checkpoint/2026-03-22/14-26-09_stage1-dino_large_1f9983d8517a45c29be1b3d3/checkpoints/test_results_2026-03-22_14-31-16/predictions.h5",
+    "metrics_json": "checkpoint/2026-03-22/14-26-09_stage1-dino_large_1f9983d8517a45c29be1b3d3/checkpoints/test_results_2026-03-22_14-31-16/metrics.json",
+    "metrics_eval_json": "checkpoint/2026-03-22/14-26-09_stage1-dino_large_1f9983d8517a45c29be1b3d3/checkpoints/test_results_2026-03-22_14-31-16/metrics_eval.json",
+    "metrics": {
+      "mpjpe": 636.7619018554688,
+      "mpvpe": 634.0175170898438,
+      "rel_mpjpe": 148.41275024414062,
+      "rel_mpvpe": 147.45960998535156,
+      "num_samples": 2,
+      "num_valid_joints": 42,
+      "num_valid_hands": 2,
+      "num_excluded_coco_wholebody": 0,
+      "norm_by_hand": false
+    }
+  },
+  "environment": {
+    "torch_cuda_available": false,
+    "note": "Smoke was executed on CPU because torch.cuda.is_available() was false in this environment."
+  }
+}

@@ -17,9 +17,12 @@
   - `joint_3d_valid`
   - `has_mano`
   - `has_intr`
+- 已补上 `COCO-WholeBody` 的 Stage 1 训练侧最小接入：
+  - `masked loss -> masked mean`
+  - `COCO-WholeBody` 专用 `2D patch auxiliary loss`
+  - `val/test/evaluate` 显式排除 `COCO-WholeBody` 的 3D 指标统计
 
 未纳入本次范围：
-- `COCO-WholeBody`
 - `depth_bins`
 
 ## 已改动模块
@@ -107,8 +110,8 @@ V2 运行时现在显式区分：
 
 ## 后续建议
 
-下一步如要接入 `COCO-WholeBody`，需要单独处理：
-- 2D-only 样本的 loss 设计
-- `intr_type=fixed_virtual` 的约束
-- 训练集混合采样策略
-- 指标统计时的 3D / MANO 空样本处理
+`COCO-WholeBody` 当前仍有未收口项：
+- `MODEL.norm_by_hand=true` 仍不支持
+- 训练集混合采样策略尚未加入
+- 还没有单独的 `COCO-WholeBody` 2D 指标统计
+- Stage 2 暂未考虑接入 `COCO-WholeBody`

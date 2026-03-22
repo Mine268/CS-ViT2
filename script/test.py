@@ -159,6 +159,7 @@ def setup_model(cfg: DictConfig):
         lambda_trans=cfg.LOSS.get("lambda_trans", 0.123),
         lambda_rel=cfg.LOSS.get("lambda_rel", 0.000305),
         lambda_img=cfg.LOSS.get("lambda_img", 0.00512),
+        lambda_coco_patch_2d=cfg.LOSS.get("lambda_coco_patch_2d", 0.0),
         hm_sigma=cfg.LOSS.get("heatmap_sigma", 3),
 
         freeze_backbone=cfg.TRAIN.backbone_lr is None,
@@ -438,6 +439,18 @@ def compute_quick_metrics(results: dict, output_dir: str):
     vert_cam_gt = results["vert_cam_gt"]
     joint_3d_valid = results["joint_3d_valid"]
     has_mano = results["has_mano"]
+    total_samples = int(len(joint_cam_pred))
+
+    keep_mask = build_excluded_data_source_mask(results.get("data_source"))
+    excluded_coco_samples = 0
+    if keep_mask is not None:
+        excluded_coco_samples = int(total_samples - np.sum(keep_mask))
+        joint_cam_pred = joint_cam_pred[keep_mask]
+        joint_cam_gt = joint_cam_gt[keep_mask]
+        vert_cam_pred = vert_cam_pred[keep_mask]
+        vert_cam_gt = vert_cam_gt[keep_mask]
+        joint_3d_valid = joint_3d_valid[keep_mask]
+        has_mano = has_mano[keep_mask]
 
     joint_valid_count = float(np.sum(joint_3d_valid))
     mano_valid_count = float(np.sum(has_mano))
@@ -460,6 +473,8 @@ def compute_quick_metrics(results: dict, output_dir: str):
         "mpjpe": mpjpe,
         "mpvpe": mpvpe,
         "num_samples": int(len(joint_cam_pred)),
+        "num_samples_total": total_samples,
+        "num_excluded_coco_wholebody": excluded_coco_samples,
         "num_valid_joints": int(joint_valid_count),
         "num_valid_hands": int(mano_valid_count),
     }
@@ -468,7 +483,10 @@ def compute_quick_metrics(results: dict, output_dir: str):
     with open(metrics_path, 'w') as f:
         json.dump(metrics, f, indent=2)
 
-    logger.info(f"Metrics: MPJPE={mpjpe}, MPVPE={mpvpe}")
+    logger.info(
+        f"Metrics: MPJPE={mpjpe}, MPVPE={mpvpe}, "
+        f"eval_samples={metrics['num_samples']}, excluded_coco={excluded_coco_samples}"
+    )
     logger.info(f"Saved metrics to {metrics_path}")
 
     return metrics

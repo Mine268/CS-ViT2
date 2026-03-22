@@ -79,6 +79,8 @@ def robust_masked_mean(loss: torch.Tensor, mask: torch.Tensor):
     """
     # 确保 mask 和 loss 类型一致（防止 bool 类型报错）
     mask = mask.to(dtype=loss.dtype)
+    if mask.shape != loss.shape:
+        mask = torch.broadcast_to(mask, loss.shape)
 
     # 1. 应用掩码
     loss_masked = loss * mask
@@ -89,11 +91,57 @@ def robust_masked_mean(loss: torch.Tensor, mask: torch.Tensor):
     total_valid = mask.sum()
 
     # 3. 安全归一化
-    if total_valid > 1e-6:
+    if total_valid.item() > 1e-6:
         return total_loss / total_valid
     else:
         # 如果没有有效样本，返回 0，同时保留梯度图（乘以 0.0）
         return total_loss * 0.0
+
+
+def build_data_source_mask(
+    data_sources: Optional[Sequence[str]],
+    target_source: str,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """
+    根据 batch 内 data_source 构造样本级掩码。
+
+    Returns:
+        [B, 1]，匹配样本级 / 帧级广播使用。
+    """
+    if data_sources is None:
+        return torch.zeros((0, 1), device=device, dtype=dtype)
+
+    mask = [str(source) == target_source for source in data_sources]
+    return torch.tensor(mask, device=device, dtype=dtype).view(-1, 1)
+
+
+def joint_img_to_patch_resized(
+    joint_img: torch.Tensor,
+    patch_bbox: torch.Tensor,
+    patch_size: Tuple[int, int],
+) -> torch.Tensor:
+    """
+    将原图坐标系 2D joints 映射到 resized patch 坐标系。
+
+    Args:
+        joint_img: [B, T, J, 2]
+        patch_bbox: [B, T, 4]，xyxy
+        patch_size: (patch_h, patch_w)
+    """
+    patch_h, patch_w = patch_size
+    patch_width = torch.clamp(patch_bbox[..., 2] - patch_bbox[..., 0], min=1e-6)
+    patch_height = torch.clamp(patch_bbox[..., 3] - patch_bbox[..., 1], min=1e-6)
+
+    joint_patch_resized = torch.empty_like(joint_img)
+    joint_patch_resized[..., 0] = (
+        (joint_img[..., 0] - patch_bbox[..., 0, None]) * patch_w / patch_width[..., None]
+    )
+    joint_patch_resized[..., 1] = (
+        (joint_img[..., 1] - patch_bbox[..., 1, None]) * patch_h / patch_height[..., None]
+    )
+    return joint_patch_resized
 
 
 class Keypoint3DLoss(nn.Module):
@@ -283,25 +331,30 @@ class BundleLoss(nn.Module):
         norm_valid: torch.Tensor,
     ):
         loss_theta = self.mse(pose_pred, pose_gt)
-        loss_theta = torch.mean(loss_theta * has_mano[..., None])
+        loss_theta = robust_masked_mean(loss_theta, has_mano[..., None])
         loss_shape = self.mse(shape_pred, shape_gt)
-        loss_shape = torch.mean(loss_shape * has_mano[..., None])
+        loss_shape = robust_masked_mean(loss_shape, has_mano[..., None])
 
         loss_verts = self.l1(verts_rel_pred, verts_rel_gt)
-        loss_verts = torch.mean(loss_verts * has_mano[..., None, None])
+        loss_verts = robust_masked_mean(loss_verts, has_mano[..., None, None])
 
         if self.supervise_global:
             loss_joint_root = self.l1(trans_pred, trans_gt)
-            loss_joint_root = torch.mean(
-                loss_joint_root * joint_3d_valid[:, :, :1] * norm_valid[:, :, None]
+            loss_joint_root = robust_masked_mean(
+                loss_joint_root,
+                joint_3d_valid[:, :, :1] * norm_valid[:, :, None],
             )
 
             loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt)
-            loss_joint_rel = torch.mean(loss_joint_rel * joint_3d_valid[..., None])
+            loss_joint_rel = robust_masked_mean(
+                loss_joint_rel,
+                joint_3d_valid[..., None],
+            )
 
             loss_joint_img = self.l1(joint_img_pred, joint_img_gt)
-            loss_joint_img = torch.mean(
-                loss_joint_img * joint_2d_valid[..., None] * norm_valid[..., None, None]
+            loss_joint_img = robust_masked_mean(
+                loss_joint_img,
+                joint_2d_valid[..., None] * norm_valid[..., None, None],
             )
 
             loss_joint = (
@@ -317,7 +370,10 @@ class BundleLoss(nn.Module):
             }
         else:
             loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt)
-            loss_joint = torch.mean(loss_joint_rel * joint_3d_valid[..., None])
+            loss_joint = robust_masked_mean(
+                loss_joint_rel,
+                joint_3d_valid[..., None],
+            )
             sub_state = {}
 
         loss = loss_theta + loss_shape + loss_verts + loss_joint
@@ -342,6 +398,7 @@ class BundleLoss2(nn.Module):
         lambda_trans: float,
         lambda_rel: float,
         lambda_img: float,
+        lambda_coco_patch_2d: float,
         supervise_global: bool,
         supervise_heatmap: bool,
         norm_by_hand: bool,
@@ -371,6 +428,7 @@ class BundleLoss2(nn.Module):
         self.lambda_trans = lambda_trans
         self.lambda_rel = lambda_rel
         self.lambda_img = lambda_img
+        self.lambda_coco_patch_2d = lambda_coco_patch_2d
 
         self.supervise_global = supervise_global
         self.supervise_heatmap = supervise_heatmap
@@ -445,8 +503,28 @@ class BundleLoss2(nn.Module):
         pose_gt = batch["mano_pose"]
         shape_gt = batch["mano_shape"]
         has_mano = batch["has_mano"]
+        joint_2d_valid = batch["joint_2d_valid"]
         joint_3d_valid = batch["joint_3d_valid"]
         has_intr = batch["has_intr"]
+        if batch.get("data_source") is None:
+            coco_sample_mask = torch.zeros(
+                (has_mano.shape[0], 1),
+                device=pose_pred.device,
+                dtype=pose_pred.dtype,
+            )
+        else:
+            coco_sample_mask = build_data_source_mask(
+                batch.get("data_source"),
+                target_source="COCO-WholeBody",
+                device=pose_pred.device,
+                dtype=pose_pred.dtype,
+            )
+
+        if self.norm_by_hand and coco_sample_mask.numel() > 0 and torch.any(coco_sample_mask > 0.5):
+            raise AssertionError(
+                "COCO-WholeBody 2D patch loss does not support norm_by_hand=true yet. "
+                "Please set MODEL.norm_by_hand=false."
+            )
 
         if self.norm_by_hand:
             norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
@@ -460,13 +538,14 @@ class BundleLoss2(nn.Module):
             trans_gt = trans_gt / (norm_scale_gt[..., None] + NORM_SCALE_EPSILON)
 
         loss_theta = self.l1(pose_pred, pose_gt)
-        loss_theta = torch.mean(loss_theta * has_mano[..., None])
+        loss_theta = robust_masked_mean(loss_theta, has_mano[..., None])
         loss_shape = self.l1(shape_pred, shape_gt)
-        loss_shape = torch.mean(loss_shape * has_mano[..., None])
+        loss_shape = robust_masked_mean(loss_shape, has_mano[..., None])
         if not self.supervise_heatmap:
             loss_trans = self.l1(trans_pred, trans_gt)
-            loss_trans = torch.mean(
-                loss_trans * joint_3d_valid[:, :, :1] * norm_valid_gt[..., None]
+            loss_trans = robust_masked_mean(
+                loss_trans,
+                joint_3d_valid[:, :, :1] * norm_valid_gt[..., None],
             )
         else:
             loss_trans = (
@@ -474,12 +553,16 @@ class BundleLoss2(nn.Module):
                 + self.compute_hm_ce(log_hm_pred[1], trans_gt[..., 1], self.y_centers)
                 + self.compute_hm_ce(log_hm_pred[2], trans_gt[..., 2], self.z_centers)
             )
-            loss_trans = torch.mean(
-                loss_trans * joint_3d_valid[:, :, 0] * norm_valid_gt
+            loss_trans = robust_masked_mean(
+                loss_trans,
+                joint_3d_valid[:, :, 0] * norm_valid_gt,
             )
 
         loss_joint_rel = self.l1(joint_rel_pred, batch["joint_rel"])
-        loss_joint_rel = torch.mean(loss_joint_rel * joint_3d_valid[..., None])
+        loss_joint_rel = robust_masked_mean(
+            loss_joint_rel,
+            joint_3d_valid[..., None],
+        )
 
         if self.norm_by_hand:
             trans_pred_scaled = trans_pred * (norm_scale_gt[..., None] + NORM_SCALE_EPSILON)
@@ -496,8 +579,29 @@ class BundleLoss2(nn.Module):
         )
         reproj_valid = joint_3d_valid * has_intr[..., None]
         loss_joint_img = self.reproj_loss_fn(joint_img_pred, joint_img_gt)
-        loss_joint_img = torch.mean(
-            loss_joint_img * reproj_valid[..., None] * norm_valid_gt[..., None, None]
+        loss_joint_img = robust_masked_mean(
+            loss_joint_img,
+            reproj_valid[..., None] * norm_valid_gt[..., None, None],
+        )
+
+        patch_size = tuple(batch["patches"].shape[-2:])
+        joint_patch_pred = joint_img_to_patch_resized(
+            joint_img_pred,
+            batch["patch_bbox"],
+            patch_size=patch_size,
+        )
+        coco_patch_valid = (
+            joint_2d_valid
+            * has_intr[..., None]
+            * coco_sample_mask[:, :, None]
+        )
+        loss_coco_patch_2d = self.l1(
+            joint_patch_pred,
+            batch["joint_patch_resized"],
+        )
+        loss_coco_patch_2d = robust_masked_mean(
+            loss_coco_patch_2d,
+            coco_patch_valid[..., None],
         )
 
         loss = (
@@ -506,6 +610,7 @@ class BundleLoss2(nn.Module):
             + self.lambda_trans * loss_trans
             + self.lambda_rel * loss_joint_rel
             + self.lambda_img * loss_joint_img
+            + self.lambda_coco_patch_2d * loss_coco_patch_2d
         )
 
         loss_state = {
@@ -514,6 +619,7 @@ class BundleLoss2(nn.Module):
             "loss_trans": loss_trans.detach(),
             "loss_joint_rel": loss_joint_rel.detach(),
             "loss_joint_img": loss_joint_img.detach(),
+            "loss_coco_patch_2d": loss_coco_patch_2d.detach(),
         }
 
         fk_result = {
