@@ -277,30 +277,31 @@ class BundleLoss(nn.Module):
         joint_img_gt: torch.Tensor,
         joint_img_pred: torch.Tensor,
 
-        mano_valid: torch.Tensor,
-        joint_valid: torch.Tensor,
+        has_mano: torch.Tensor,
+        joint_3d_valid: torch.Tensor,
+        joint_2d_valid: torch.Tensor,
         norm_valid: torch.Tensor,
     ):
-        loss_theta = self.mse(pose_pred, pose_gt) # [b,t,d]
-        loss_theta = torch.mean(loss_theta * mano_valid[..., None])
-        loss_shape = self.mse(shape_pred, shape_gt) # [b,t,d]
-        loss_shape = torch.mean(loss_shape * mano_valid[..., None])
+        loss_theta = self.mse(pose_pred, pose_gt)
+        loss_theta = torch.mean(loss_theta * has_mano[..., None])
+        loss_shape = self.mse(shape_pred, shape_gt)
+        loss_shape = torch.mean(loss_shape * has_mano[..., None])
 
-        loss_verts = self.l1(verts_rel_pred, verts_rel_gt) # [b,t,v,d]
-        loss_verts = torch.mean(loss_verts * mano_valid[..., None, None])
+        loss_verts = self.l1(verts_rel_pred, verts_rel_gt)
+        loss_verts = torch.mean(loss_verts * has_mano[..., None, None])
 
         if self.supervise_global:
-            loss_joint_root = self.l1(trans_pred, trans_gt) # [b,t,d]
+            loss_joint_root = self.l1(trans_pred, trans_gt)
             loss_joint_root = torch.mean(
-                loss_joint_root * joint_valid[:, :, :1] * norm_valid[:, :, None]
+                loss_joint_root * joint_3d_valid[:, :, :1] * norm_valid[:, :, None]
             )
 
-            loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt) # [b,t,j,d]
-            loss_joint_rel = torch.mean(loss_joint_rel * joint_valid[..., None])
+            loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt)
+            loss_joint_rel = torch.mean(loss_joint_rel * joint_3d_valid[..., None])
 
-            loss_joint_img = self.l1(joint_img_pred, joint_img_gt) # [b,t,j,2]
+            loss_joint_img = self.l1(joint_img_pred, joint_img_gt)
             loss_joint_img = torch.mean(
-                loss_joint_img * joint_valid[..., None] * norm_valid[..., None, None]
+                loss_joint_img * joint_2d_valid[..., None] * norm_valid[..., None, None]
             )
 
             loss_joint = (
@@ -315,9 +316,8 @@ class BundleLoss(nn.Module):
                 "loss_joint_img": loss_joint_img.detach(),
             }
         else:
-            loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt) # [b,t,j,d]
-            loss_joint = torch.mean(loss_joint_rel * joint_valid[..., None])
-
+            loss_joint_rel = self.l1(joint_rel_pred, joint_rel_gt)
+            loss_joint = torch.mean(loss_joint_rel * joint_3d_valid[..., None])
             sub_state = {}
 
         loss = loss_theta + loss_shape + loss_verts + loss_joint
@@ -434,61 +434,54 @@ class BundleLoss2(nn.Module):
         Args:
             xxx_pred: [b,t,48/10/3,n]
         """
-        # fk to pose (全帧 FK)
         with torch.no_grad():
             _, vert_rel_gt = self.rmano_layer(
                 batch["mano_pose"], batch["mano_shape"]
             )
-        # decouple shape and pose
         joint_rel_pred, vert_rel_pred = self.rmano_layer(
             pose_pred, shape_pred.detach()
         )
-        # get data
+
         pose_gt = batch["mano_pose"]
         shape_gt = batch["mano_shape"]
-        mano_valid = batch["mano_valid"] # [b,t]
-        joint_valid = batch["joint_valid"] # [b,t,j]
+        has_mano = batch["has_mano"]
+        joint_3d_valid = batch["joint_3d_valid"]
+        has_intr = batch["has_intr"]
 
         if self.norm_by_hand:
-            # [b,t]
             norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
-                batch["joint_cam"], batch["joint_valid"]
+                batch["joint_cam"], batch["joint_3d_valid"]
             )
         else:
-            # 当 norm_by_hand=False 时，norm_valid_gt 默认为 1（全部有效）
-            norm_valid_gt = torch.ones_like(mano_valid)
+            norm_valid_gt = torch.ones_like(has_mano)
 
-        # get trans gt data
-        trans_gt = batch["joint_cam"][:, :, 0] # [b,t,3]
+        trans_gt = batch["joint_cam"][:, :, 0]
         if self.norm_by_hand:
-            # 添加 epsilon 防止除零导致 NaN/Inf
             trans_gt = trans_gt / (norm_scale_gt[..., None] + NORM_SCALE_EPSILON)
 
-        # param loss
-        loss_theta = self.l1(pose_pred, pose_gt) # [b,t,d]
-        loss_theta = torch.mean(loss_theta * mano_valid[..., None])
-        loss_shape = self.l1(shape_pred, shape_gt) # [b,t,d]
-        loss_shape = torch.mean(loss_shape * mano_valid[..., None])
-        if not self.supervise_heatmap: # supervise on trans
-            loss_trans = self.l1(trans_pred, trans_gt) # [b,t,d]
-            loss_trans = torch.mean(loss_trans * joint_valid[:, :, :1] * norm_valid_gt[..., None])
-        else: # supervise on heatmap, using cross entropy
+        loss_theta = self.l1(pose_pred, pose_gt)
+        loss_theta = torch.mean(loss_theta * has_mano[..., None])
+        loss_shape = self.l1(shape_pred, shape_gt)
+        loss_shape = torch.mean(loss_shape * has_mano[..., None])
+        if not self.supervise_heatmap:
+            loss_trans = self.l1(trans_pred, trans_gt)
+            loss_trans = torch.mean(
+                loss_trans * joint_3d_valid[:, :, :1] * norm_valid_gt[..., None]
+            )
+        else:
             loss_trans = (
                 self.compute_hm_ce(log_hm_pred[0], trans_gt[..., 0], self.x_centers)
                 + self.compute_hm_ce(log_hm_pred[1], trans_gt[..., 1], self.y_centers)
                 + self.compute_hm_ce(log_hm_pred[2], trans_gt[..., 2], self.z_centers)
             )
             loss_trans = torch.mean(
-                loss_trans * joint_valid[:, :, 0] * norm_valid_gt
+                loss_trans * joint_3d_valid[:, :, 0] * norm_valid_gt
             )
 
-        # joint loss
-        loss_joint_rel = self.l1(joint_rel_pred, batch["joint_rel"]) # [b,t,j,d]
-        loss_joint_rel = torch.mean(loss_joint_rel * joint_valid[..., None])
+        loss_joint_rel = self.l1(joint_rel_pred, batch["joint_rel"])
+        loss_joint_rel = torch.mean(loss_joint_rel * joint_3d_valid[..., None])
 
-        # 投影 loss（使用 scaled trans，避免修改原始 trans_pred）
         if self.norm_by_hand:
-            # 添加 epsilon 保持与归一化操作的对称性
             trans_pred_scaled = trans_pred * (norm_scale_gt[..., None] + NORM_SCALE_EPSILON)
         else:
             trans_pred_scaled = trans_pred
@@ -501,18 +494,18 @@ class BundleLoss2(nn.Module):
         joint_img_pred = proj_points_3d(
             joint_cam_pred, batch["focal"], batch["princpt"]
         )
-        # 使用鲁棒loss计算重投影误差
-        loss_joint_img = self.reproj_loss_fn(joint_img_pred, joint_img_gt) # [b,1,j,2]
+        reproj_valid = joint_3d_valid * has_intr[..., None]
+        loss_joint_img = self.reproj_loss_fn(joint_img_pred, joint_img_gt)
         loss_joint_img = torch.mean(
-            loss_joint_img * joint_valid[..., None] * norm_valid_gt[..., None, None]
+            loss_joint_img * reproj_valid[..., None] * norm_valid_gt[..., None, None]
         )
 
         loss = (
-            self.lambda_theta * loss_theta +
-            self.lambda_shape * loss_shape +
-            self.lambda_trans * loss_trans +
-            self.lambda_rel * loss_joint_rel +
-            self.lambda_img * loss_joint_img
+            self.lambda_theta * loss_theta
+            + self.lambda_shape * loss_shape
+            + self.lambda_trans * loss_trans
+            + self.lambda_rel * loss_joint_rel
+            + self.lambda_img * loss_joint_img
         )
 
         loss_state = {

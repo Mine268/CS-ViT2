@@ -13,28 +13,10 @@ import torch
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 import torchvision
 
-import kornia.geometry.transform as T
+from .schema_v2 import normalize_decoded_clip_sample, slice_normalized_clip_sample
 
-from .preprocess import preprocess_batch
 
-NPY_KEYS = [
-    "hand_bbox.npy",
-    "joint_img.npy",
-    "joint_hand_bbox.npy",
-    "joint_cam.npy",
-    "joint_rel.npy",
-    "joint_valid.npy",
-    "mano_pose.npy",
-    "mano_shape.npy",
-    "mano_valid.npy",
-    "timestamp.npy",
-    "focal.npy",
-    "princpt.npy",
-]
-
-COLLATE_LIST_KEYS = [
-    "imgs", "handedness", "__key__"
-]
+COLLATE_LIST_KEYS = {"imgs"}
 
 
 @dataclass(frozen=True)
@@ -42,24 +24,6 @@ class ClipSegment:
     tar_path: str
     start_clip: int
     end_clip: int
-
-def _build_sub_sample(sample, start: int, end: int, clip_idx: int):
-    imgs_path = sample["imgs_path.json"]
-    img_list = sample["img_bytes.pickle"]
-    handedness = sample["handedness.json"]
-
-    sub_sample = {
-        "__key__": f"{sample['__key__']}_{clip_idx:04d}",
-        "handedness": handedness,
-        "imgs_path": imgs_path[start:end],
-        "imgs_bytes": img_list[start:end],
-    }
-    for key in NPY_KEYS:
-        if key in sample:
-            out_key = key.replace(".npy", "")
-            sub_sample[out_key] = sample[key][start:end].copy()
-
-    return sub_sample
 
 
 def count_sample_clips(total_frames: int, num_frames: int, stride: int) -> int:
@@ -104,6 +68,8 @@ def clip_to_t_frames(
     sampling_mode: str = "dense",
     clips_per_sequence: Optional[int] = None,
     seed: Optional[int] = None,
+    default_data_source: Optional[str] = None,
+    default_source_split: str = "unknown",
 ):
     """
     将序列样本拆分为小片小片的连续样本
@@ -117,9 +83,13 @@ def clip_to_t_frames(
     rng_seed = None if seed is None else seed + worker_id
     rng = np.random.default_rng(rng_seed)
 
-    for sample in source:
-        img_list = sample["img_bytes.pickle"]
-        total_frames = len(img_list)
+    for decoded_sample in source:
+        clip_sample = normalize_decoded_clip_sample(
+            decoded_sample,
+            default_data_source=default_data_source,
+            default_source_split=default_source_split,
+        )
+        total_frames = clip_sample["num_frames"]
         if total_frames < num_frames:
             continue
 
@@ -135,7 +105,12 @@ def clip_to_t_frames(
         for clip_idx in clip_indices:
             start = int(clip_idx) * stride
             end = start + num_frames
-            yield _build_sub_sample(sample, start, end, int(clip_idx))
+            yield slice_normalized_clip_sample(
+                clip_sample,
+                start,
+                end,
+                slice_index=int(clip_idx),
+            )
 
 
 def estimate_wds_shard_clip_counts(
@@ -211,11 +186,15 @@ class WDSClipSegmentDataset(IterableDataset):
         segments: Sequence[ClipSegment],
         num_frames: int,
         stride: int,
+        default_data_source: Optional[str] = None,
+        default_source_split: str = "unknown",
     ):
         super().__init__()
         self.segments = list(segments)
         self.num_frames = num_frames
         self.stride = stride
+        self.default_data_source = default_data_source
+        self.default_source_split = default_source_split
 
     def __iter__(self):
         for segment in self.segments:
@@ -226,8 +205,13 @@ class WDSClipSegmentDataset(IterableDataset):
                 workersplitter=lambda src: src,
             ).decode()
             clip_cursor = 0
-            for sample in dataset:
-                total_frames = len(sample["img_bytes.pickle"])
+            for decoded_sample in dataset:
+                clip_sample = normalize_decoded_clip_sample(
+                    decoded_sample,
+                    default_data_source=self.default_data_source,
+                    default_source_split=self.default_source_split,
+                )
+                total_frames = clip_sample["num_frames"]
                 total_clips = count_sample_clips(total_frames, self.num_frames, self.stride)
                 local_start = max(0, segment.start_clip - clip_cursor)
                 local_end = min(total_clips, segment.end_clip - clip_cursor)
@@ -235,7 +219,14 @@ class WDSClipSegmentDataset(IterableDataset):
                     for clip_idx in range(local_start, local_end):
                         start = clip_idx * self.stride
                         end = start + self.num_frames
-                        yield preprocess_frame(_build_sub_sample(sample, start, end, int(clip_idx)))
+                        yield preprocess_frame(
+                            slice_normalized_clip_sample(
+                                clip_sample,
+                                start,
+                                end,
+                                slice_index=int(clip_idx),
+                            )
+                        )
                 clip_cursor += total_clips
                 if clip_cursor >= segment.end_clip:
                     break
@@ -248,11 +239,15 @@ def get_segmented_wds_dataloader(
     batch_size: int,
     num_workers: int,
     prefetcher_factor: int,
+    default_data_source: Optional[str] = None,
+    default_source_split: str = "unknown",
 ):
     dataset = WDSClipSegmentDataset(
         segments=segments,
         num_frames=num_frames,
         stride=stride,
+        default_data_source=default_data_source,
+        default_source_split=default_source_split,
     )
     return DataLoader(
         dataset,
@@ -263,36 +258,48 @@ def get_segmented_wds_dataloader(
         pin_memory=False,
     )
 
+
+def _decode_webp_bytes(img_bytes: bytes) -> torch.Tensor:
+    buffer_np = np.frombuffer(img_bytes, dtype=np.uint8).copy()
+    buffer = torch.from_numpy(buffer_np)
+    try:
+        return torchvision.io.decode_webp(buffer)
+    except RuntimeError:
+        return torchvision.io.decode_image(
+            buffer,
+            mode=torchvision.io.ImageReadMode.RGB,
+        )
+
+
 def preprocess_frame(sample):
     """将图像二进制流转换为图片"""
-    # 1. 图片解码: Bytes (WebP) -> PIL -> Tensor
-    # Writer 中使用的是 cv2.imencode(".webp")，这里用 PIL 打开兼容性很好
     imgs_tensor = []
     for img_bytes in sample["imgs_bytes"]:
-        buffer_np = np.frombuffer(img_bytes, dtype=np.uint8).copy()
-        buffer = torch.from_numpy(buffer_np)
-        img = torchvision.io.decode_webp(buffer)
-        imgs_tensor.append(img)
+        imgs_tensor.append(_decode_webp_bytes(img_bytes))
     imgs_tensor = torch.stack(imgs_tensor)
 
-    # 2. 处理其他 Numpy 字段
     result = {
+        "__key__": sample["__key__"],
         "imgs_path": sample["imgs_path"],
         "imgs": imgs_tensor,
-        "handedness": sample["handedness"], # 此时还是 str, collate 时可能需要特殊处理或 drop
+        "handedness": sample["handedness"],
+        "data_source": sample["data_source"],
+        "source_split": sample["source_split"],
+        "source_index": sample["source_index"],
+        "intr_type": sample["intr_type"],
+        "additional_desc": sample["additional_desc"],
     }
 
-    # 自动将所有 numpy 字段转为 Tensor
-    for key in sample:
-        if key not in ["__key__", "imgs_path", "imgs_bytes", "handedness"]:
-            # 确保是 float32 (根据你的 writer 逻辑，大部分已经是 float32)
-            val = sample[key]
-            if isinstance(val, np.ndarray):
-                result[key] = torch.from_numpy(val).float()
-            else:
-                result[key] = torch.tensor(val)
+    for key, value in sample.items():
+        if key in result or key in {"num_frames", "imgs_bytes"}:
+            continue
+        if isinstance(value, np.ndarray):
+            result[key] = torch.from_numpy(value).float()
+        else:
+            result[key] = value
 
     return result
+
 
 def collate_fn(batch_wds):
     """对batch数据进行重整，由于图像大小不一，特判使用List"""
@@ -327,6 +334,8 @@ def get_dataloader(
     clips_per_sequence: Optional[int] = None,
     shardshuffle: Union[bool, int] = False,
     post_clip_shuffle: int = 200,
+    default_data_source: Optional[str] = None,
+    default_source_split: str = "unknown",
 ) -> wds.WebDataset:
     """获得wds数据加载器
 
@@ -357,6 +366,8 @@ def get_dataloader(
             sampling_mode=clip_sampling_mode,
             clips_per_sequence=clips_per_sequence,
             seed=seed,
+            default_data_source=default_data_source,
+            default_source_split=default_source_split,
         )
     )
 
@@ -374,7 +385,7 @@ def get_dataloader(
         batch_size=None,
         num_workers=num_workers,
         prefetch_factor=prefetcher_factor if num_workers > 0 else None,
-        pin_memory=False
+        pin_memory=False,
     )
 
     return dataloader

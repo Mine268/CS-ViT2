@@ -12,6 +12,11 @@
   - 故障排查
 
 ### 详细说明
+- **[V2_DATASET_MIGRATION_STATUS.md](V2_DATASET_MIGRATION_STATUS.md)** - V2 数据集迁移状态与验证结果
+  - 当前项目已切到 `webdatasets2` 的模块范围
+  - `loss / norm / metric / test / evaluate` 的新 valid 语义
+  - `temp/` 下的验证产物路径
+
 - **[CHECKPOINT_TEST_WORKFLOW.md](CHECKPOINT_TEST_WORKFLOW.md)** - 指定 checkpoint 在指定数据集上的单卡测试流程
   - 如何用 `script.test` 运行单卡测试
   - 如何用 `script.evaluate` 计算完整指标
@@ -163,9 +168,10 @@
 
 ## 📅 更新日期
 
-**最后更新**: 2026-03-07
+**最后更新**: 2026-03-22
 
 **重要更新**:
+- 2026-03-22: 完成四个已用数据集到 `webdatasets2` 的 V2 迁移，并补充 temp/ 验证产物与状态文档
 - 2026-03-07: 增加 depth-bin repack 脚本与说明
 - 2026-03-07: 同步 depth-bins 外部目录 README 到 docs
 - 2026-03-07: 增加静态深度分桶 WebDataset 流程文档与对应 dataloader

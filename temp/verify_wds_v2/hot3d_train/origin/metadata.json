@@ -1,0 +1,16 @@
+{
+  "__key__": "3_65_train_hot3d_0000",
+  "imgs_path": "P0003_c701bd11/recording.vrs",
+  "handedness": "left",
+  "flip": null,
+  "data_source": "hot3d",
+  "source_split": "train",
+  "intr_type": "real",
+  "source_index": {
+    "sequence_name": "P0003_c701bd11",
+    "timestamp_ns": 56828608203793,
+    "handedness": "left",
+    "frame_idx_within_clip": 0
+  },
+  "additional_desc": {}
+}

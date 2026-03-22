@@ -179,14 +179,7 @@ def test(
     aim_run: Optional[Run] = None,
 ):
     """
-    主测试循环，收集预测结果和 ground truth
-
-    Args:
-        cfg: Hydra 配置对象
-        accelerator: Accelerate 分布式管理器
-        net: 模型
-        test_loader: 测试数据加载器
-        aim_run: AIM 实验跟踪对象（可选）
+    运行测试并收集预测结果
 
     Returns:
         local_results: 本地收集的结果字典
@@ -194,10 +187,14 @@ def test(
     net.eval()
     device = accelerator.device
 
-    # 初始化本地结果存储
     local_results = {
+        "sample_key": [],
         "imgs_path": [],
         "handedness": [],
+        "data_source": [],
+        "source_split": [],
+        "intr_type": [],
+        "source_index": [],
         "joint_cam_pred": [],
         "vert_cam_pred": [],
         "mano_pose_pred": [],
@@ -213,19 +210,19 @@ def test(
         "focal": [],
         "princpt": [],
         "hand_bbox": [],
-        "joint_valid": [],
-        "mano_valid": [],
+        "joint_2d_valid": [],
+        "joint_3d_valid": [],
+        "has_mano": [],
+        "has_intr": [],
     }
 
     total_samples = 0
     max_samples = cfg.TEST.max_samples
 
     for batch_idx, batch_ in enumerate(test_loader):
-        # 检查是否达到样本数限制
         if max_samples is not None and total_samples >= max_samples:
             break
 
-        # 预处理（关闭增强）
         batch, trans_2d_mat, _ = preprocess_batch(
             batch_origin=batch_,
             patch_size=[cfg.MODEL.img_size, cfg.MODEL.img_size],
@@ -234,14 +231,12 @@ def test(
             scale_f_range=[1.0, 1.0],
             persp_rot_max=0.0,
             joint_rep_type=cfg.MODEL.joint_type,
-            augmentation_flag=False,  # 关闭增强
+            augmentation_flag=False,
             device=device,
             pixel_aug=None,
             perspective_normalization=cfg.TRAIN.get("perspective_normalization", False),
         )
 
-        # 推理（使用 predict_full，传入 GT 用于 norm_by_hand 反归一化）
-        # 多卡测试时 net 可能被 DDP 包装，需要先 unwrap 后再访问自定义方法
         unwrapped_net = net.module if hasattr(net, 'module') else net
         result = unwrapped_net.predict_full(
             img=batch["patches"],
@@ -249,100 +244,58 @@ def test(
             focal=batch["focal"],
             princpt=batch["princpt"],
             timestamp=batch["timestamp"],
-            joint_cam_gt=batch["joint_cam"],      # 用于计算 norm_scale
-            joint_valid_gt=batch["joint_valid"],  # 用于计算 norm_scale
+            joint_cam_gt=batch["joint_cam"],
+            joint_3d_valid_gt=batch["joint_3d_valid"],
         )
 
-        # 计算 GT 的 verts（使用 MANO FK）
         with torch.no_grad():
             _, verts_rel_gt = unwrapped_net.mano_to_pose(
                 batch["mano_pose"][:, -1:],
-                batch["mano_shape"][:, -1:]
+                batch["mano_shape"][:, -1:],
             )
-            # verts_cam_gt = verts_rel_gt + root_joint
             verts_cam_gt = verts_rel_gt + batch["joint_cam"][:, -1:, :1]
 
-        # 收集结果（只保存最后一帧）
         batch_size = batch["patches"].shape[0]
         for i in range(batch_size):
-            # 检查是否达到样本数限制
             if max_samples is not None and total_samples >= max_samples:
                 break
 
-            # 预测结果（已经是最后一帧）
-            local_results["joint_cam_pred"].append(
-                result["joint_cam_pred"][i, 0].cpu().numpy()  # [21, 3]
-            )
-            local_results["vert_cam_pred"].append(
-                result["vert_cam_pred"][i, 0].cpu().numpy()  # [778, 3]
-            )
-            local_results["mano_pose_pred"].append(
-                result["mano_pose_pred"][i, 0].cpu().numpy()  # [48]
-            )
-            local_results["mano_shape_pred"].append(
-                result["mano_shape_pred"][i, 0].cpu().numpy()  # [10]
-            )
-            local_results["trans_pred"].append(
-                result["trans_pred"][i, 0].cpu().numpy()  # [3]
-            )
-            local_results["trans_pred_denorm"].append(
-                result["trans_pred_denorm"][i, 0].cpu().numpy()  # [3]
-            )
-            local_results["norm_scale"].append(
-                result["norm_scale"][i, 0].cpu().numpy()  # scalar
-            )
-            local_results["norm_valid"].append(
-                result["norm_valid"][i, 0].cpu().numpy()  # scalar
-            )
+            local_results["joint_cam_pred"].append(result["joint_cam_pred"][i, 0].cpu().numpy())
+            local_results["vert_cam_pred"].append(result["vert_cam_pred"][i, 0].cpu().numpy())
+            local_results["mano_pose_pred"].append(result["mano_pose_pred"][i, 0].cpu().numpy())
+            local_results["mano_shape_pred"].append(result["mano_shape_pred"][i, 0].cpu().numpy())
+            local_results["trans_pred"].append(result["trans_pred"][i, 0].cpu().numpy())
+            local_results["trans_pred_denorm"].append(result["trans_pred_denorm"][i, 0].cpu().numpy())
+            local_results["norm_scale"].append(result["norm_scale"][i, 0].cpu().numpy())
+            local_results["norm_valid"].append(result["norm_valid"][i, 0].cpu().numpy())
 
-            # Ground truth（取最后一帧）
-            local_results["joint_cam_gt"].append(
-                batch["joint_cam"][i, -1].cpu().numpy()  # [21, 3]
-            )
-            local_results["vert_cam_gt"].append(
-                verts_cam_gt[i, 0].cpu().numpy()  # [778, 3]
-            )
-            local_results["mano_pose_gt"].append(
-                batch["mano_pose"][i, -1].cpu().numpy()  # [48]
-            )
-            local_results["mano_shape_gt"].append(
-                batch["mano_shape"][i, -1].cpu().numpy()  # [10]
-            )
+            local_results["joint_cam_gt"].append(batch["joint_cam"][i, -1].cpu().numpy())
+            local_results["vert_cam_gt"].append(verts_cam_gt[i, 0].cpu().numpy())
+            local_results["mano_pose_gt"].append(batch["mano_pose"][i, -1].cpu().numpy())
+            local_results["mano_shape_gt"].append(batch["mano_shape"][i, -1].cpu().numpy())
 
-            # 相机参数和其他信息（取最后一帧）
-            local_results["focal"].append(
-                batch["focal"][i, -1].cpu().numpy()  # [2]
-            )
-            local_results["princpt"].append(
-                batch["princpt"][i, -1].cpu().numpy()  # [2]
-            )
-            local_results["hand_bbox"].append(
-                batch["hand_bbox"][i, -1].cpu().numpy()  # [4]
-            )
-            local_results["joint_valid"].append(
-                batch["joint_valid"][i, -1].cpu().numpy()  # [21]
-            )
-            local_results["mano_valid"].append(
-                batch["mano_valid"][i, -1].cpu().numpy()  # []
-            )
+            local_results["focal"].append(batch["focal"][i, -1].cpu().numpy())
+            local_results["princpt"].append(batch["princpt"][i, -1].cpu().numpy())
+            local_results["hand_bbox"].append(batch["hand_bbox"][i, -1].cpu().numpy())
+            local_results["joint_2d_valid"].append(batch["joint_2d_valid"][i, -1].cpu().numpy())
+            local_results["joint_3d_valid"].append(batch["joint_3d_valid"][i, -1].cpu().numpy())
+            local_results["has_mano"].append(batch["has_mano"][i, -1].cpu().numpy())
+            local_results["has_intr"].append(batch["has_intr"][i, -1].cpu().numpy())
 
-            # 路径和 handedness（字符串）
-            # 注意：imgs_path 可能是列表或字符串
+            local_results["sample_key"].append(str(batch["__key__"][i]))
             imgs_path = batch["imgs_path"][i]
-            if isinstance(imgs_path, list):
-                local_results["imgs_path"].append(imgs_path[-1])  # 取最后一帧
-            else:
-                local_results["imgs_path"].append(str(imgs_path))
-
-            handedness = "left" if batch["flip"][i] else "right"
-            if isinstance(handedness, list):
-                local_results["handedness"].append(handedness[-1])
-            else:
-                local_results["handedness"].append(str(handedness))
+            local_results["imgs_path"].append(imgs_path[-1] if isinstance(imgs_path, list) else str(imgs_path))
+            local_results["handedness"].append(str(batch["handedness"][i]))
+            local_results["data_source"].append(str(batch["data_source"][i]))
+            local_results["source_split"].append(str(batch["source_split"][i]))
+            local_results["intr_type"].append(str(batch["intr_type"][i]))
+            source_index = batch["source_index"][i]
+            if isinstance(source_index, list):
+                source_index = source_index[-1]
+            local_results["source_index"].append(json.dumps(source_index, ensure_ascii=False, sort_keys=True))
 
             total_samples += 1
 
-        # 可视化
         if (
             accelerator.is_main_process
             and aim_run is not None
@@ -355,10 +308,9 @@ def test(
                 img_vis_aim,
                 name="test_vis",
                 step=batch_idx,
-                context={"subset": "test"}
+                context={"subset": "test"},
             )
 
-        # 日志
         if accelerator.is_main_process and (batch_idx + 1) % 10 == 0:
             logger.info(f"Processed {batch_idx + 1} batches, {total_samples} samples")
 
@@ -380,12 +332,12 @@ def merge_results(accelerator: Accelerator, local_results: dict):
     device = accelerator.device
     merged_results = {}
 
-    # 数值数据：转为 Tensor 后 gather
     tensor_keys = [
         "joint_cam_pred", "vert_cam_pred", "mano_pose_pred", "mano_shape_pred",
         "trans_pred", "trans_pred_denorm", "norm_scale", "norm_valid",
         "joint_cam_gt", "vert_cam_gt", "mano_pose_gt", "mano_shape_gt",
-        "focal", "princpt", "hand_bbox", "joint_valid", "mano_valid"
+        "focal", "princpt", "hand_bbox", "joint_2d_valid", "joint_3d_valid",
+        "has_mano", "has_intr",
     ]
 
     for key in tensor_keys:
@@ -398,14 +350,26 @@ def merge_results(accelerator: Accelerator, local_results: dict):
             if accelerator.is_main_process:
                 merged_results[key] = np.array([])
 
-    # 字符串数据：直接 gather（gather_for_metrics 支持字符串列表）
-    string_keys = ["imgs_path", "handedness"]
+    string_keys = [
+        "sample_key", "imgs_path", "handedness", "data_source",
+        "source_split", "intr_type", "source_index",
+    ]
     for key in string_keys:
         gathered_list = accelerator.gather_for_metrics(local_results[key])
         if accelerator.is_main_process:
             merged_results[key] = gathered_list
 
     return merged_results
+
+
+def _flatten_string_values(values):
+    flattened = []
+    for value in values:
+        if isinstance(value, list):
+            flattened.append(value[0] if len(value) > 0 else "")
+        else:
+            flattened.append(str(value))
+    return np.array(flattened, dtype=h5py.string_dtype(encoding='utf-8'))
 
 
 def save_results_hdf5(output_path: str, results: dict, cfg: DictConfig):
@@ -420,123 +384,32 @@ def save_results_hdf5(output_path: str, results: dict, cfg: DictConfig):
     os.makedirs(osp.dirname(output_path), exist_ok=True)
 
     with h5py.File(output_path, 'w') as f:
-        # 创建 samples 组
         samples_group = f.create_group("samples")
-
-        # 字符串数据（需要特殊处理）
-        dt_str = h5py.string_dtype(encoding='utf-8')
-
-        # imgs_path
-        imgs_path_list = results["imgs_path"]
-        imgs_path_flat = []
-        for path in imgs_path_list:
-            if isinstance(path, list):
-                imgs_path_flat.append(path[0] if len(path) > 0 else "")
-            else:
-                imgs_path_flat.append(str(path))
-        samples_group.create_dataset(
-            "imgs_path",
-            data=np.array(imgs_path_flat, dtype=dt_str)
-        )
-
-        # handedness
-        handedness_list = results["handedness"]
-        handedness_flat = []
-        for hand in handedness_list:
-            if isinstance(hand, list):
-                handedness_flat.append(hand[0] if len(hand) > 0 else "")
-            else:
-                handedness_flat.append(str(hand))
-        samples_group.create_dataset(
-            "handedness",
-            data=np.array(handedness_flat, dtype=dt_str)
-        )
-
-        # 数值数据（使用 gzip 压缩）
         compression = cfg.TEST.compression if cfg.TEST.compression else None
 
-        samples_group.create_dataset(
-            "joint_cam_pred",
-            data=results["joint_cam_pred"].astype(np.float32),
-            compression=compression
-        )
-        samples_group.create_dataset(
-            "vert_cam_pred",
-            data=results["vert_cam_pred"].astype(np.float32),
-            compression=compression
-        )
-        samples_group.create_dataset(
-            "mano_pose_pred",
-            data=results["mano_pose_pred"].astype(np.float32),
-            compression=compression
-        )
-        samples_group.create_dataset(
-            "mano_shape_pred",
-            data=results["mano_shape_pred"].astype(np.float32),
-            compression=compression
-        )
-        samples_group.create_dataset(
-            "trans_pred",
-            data=results["trans_pred"].astype(np.float32),
-            compression=compression
-        )
-        samples_group.create_dataset(
-            "trans_pred_denorm",
-            data=results["trans_pred_denorm"].astype(np.float32),
-            compression=compression
-        )
-        samples_group.create_dataset(
-            "norm_scale",
-            data=results["norm_scale"].astype(np.float32)
-        )
-        samples_group.create_dataset(
-            "norm_valid",
-            data=results["norm_valid"].astype(np.float32)
-        )
+        for key in [
+            "sample_key", "imgs_path", "handedness", "data_source",
+            "source_split", "intr_type", "source_index",
+        ]:
+            samples_group.create_dataset(key, data=_flatten_string_values(results[key]))
 
-        samples_group.create_dataset(
-            "joint_cam_gt",
-            data=results["joint_cam_gt"].astype(np.float32),
-            compression=compression
-        )
-        samples_group.create_dataset(
-            "vert_cam_gt",
-            data=results["vert_cam_gt"].astype(np.float32),
-            compression=compression
-        )
-        samples_group.create_dataset(
-            "mano_pose_gt",
-            data=results["mano_pose_gt"].astype(np.float32),
-            compression=compression
-        )
-        samples_group.create_dataset(
-            "mano_shape_gt",
-            data=results["mano_shape_gt"].astype(np.float32),
-            compression=compression
-        )
+        for key in [
+            "joint_cam_pred", "vert_cam_pred", "mano_pose_pred", "mano_shape_pred",
+            "trans_pred", "trans_pred_denorm", "joint_cam_gt", "vert_cam_gt",
+            "mano_pose_gt", "mano_shape_gt",
+        ]:
+            samples_group.create_dataset(
+                key,
+                data=results[key].astype(np.float32),
+                compression=compression,
+            )
 
-        samples_group.create_dataset(
-            "focal",
-            data=results["focal"].astype(np.float32)
-        )
-        samples_group.create_dataset(
-            "princpt",
-            data=results["princpt"].astype(np.float32)
-        )
-        samples_group.create_dataset(
-            "hand_bbox",
-            data=results["hand_bbox"].astype(np.float32)
-        )
-        samples_group.create_dataset(
-            "joint_valid",
-            data=results["joint_valid"].astype(np.float32)
-        )
-        samples_group.create_dataset(
-            "mano_valid",
-            data=results["mano_valid"].astype(np.float32)
-        )
+        for key in [
+            "norm_scale", "norm_valid", "focal", "princpt", "hand_bbox",
+            "joint_2d_valid", "joint_3d_valid", "has_mano", "has_intr",
+        ]:
+            samples_group.create_dataset(key, data=results[key].astype(np.float32))
 
-        # 创建 metadata 组
         metadata_group = f.create_group("metadata")
         metadata_group.attrs["num_samples"] = len(results["imgs_path"])
         metadata_group.attrs["timestamp"] = datetime.datetime.now().isoformat()
@@ -559,35 +432,43 @@ def compute_quick_metrics(results: dict, output_dir: str):
     Returns:
         metrics: 指标字典
     """
-    joint_cam_pred = results["joint_cam_pred"]  # [N, 21, 3]
-    joint_cam_gt = results["joint_cam_gt"]      # [N, 21, 3]
-    vert_cam_pred = results["vert_cam_pred"]    # [N, 778, 3]
-    vert_cam_gt = results["vert_cam_gt"]        # [N, 778, 3]
-    joint_valid = results["joint_valid"]        # [N, 21]
-    mano_valid = results["mano_valid"]          # [N]
+    joint_cam_pred = results["joint_cam_pred"]
+    joint_cam_gt = results["joint_cam_gt"]
+    vert_cam_pred = results["vert_cam_pred"]
+    vert_cam_gt = results["vert_cam_gt"]
+    joint_3d_valid = results["joint_3d_valid"]
+    has_mano = results["has_mano"]
 
-    # 计算 MPJPE
-    joint_diff = np.linalg.norm(joint_cam_pred - joint_cam_gt, axis=-1)  # [N, 21]
-    joint_diff_masked = joint_diff * joint_valid
-    mpjpe = np.sum(joint_diff_masked) / np.sum(joint_valid)
+    joint_valid_count = float(np.sum(joint_3d_valid))
+    mano_valid_count = float(np.sum(has_mano))
 
-    # 计算 MPVPE
-    vert_diff = np.linalg.norm(vert_cam_pred - vert_cam_gt, axis=-1)  # [N, 778]
-    vert_diff_masked = vert_diff * mano_valid[:, None]
-    mpvpe = np.sum(vert_diff_masked) / (np.sum(mano_valid) * 778)
+    if joint_valid_count > 0:
+        joint_diff = np.linalg.norm(joint_cam_pred - joint_cam_gt, axis=-1)
+        joint_diff_masked = joint_diff * joint_3d_valid
+        mpjpe = float(np.sum(joint_diff_masked) / joint_valid_count)
+    else:
+        mpjpe = float('nan')
+
+    if mano_valid_count > 0:
+        vert_diff = np.linalg.norm(vert_cam_pred - vert_cam_gt, axis=-1)
+        vert_diff_masked = vert_diff * has_mano[:, None]
+        mpvpe = float(np.sum(vert_diff_masked) / (mano_valid_count * 778.0))
+    else:
+        mpvpe = float('nan')
 
     metrics = {
-        "mpjpe": float(mpjpe),
-        "mpvpe": float(mpvpe),
+        "mpjpe": mpjpe,
+        "mpvpe": mpvpe,
         "num_samples": int(len(joint_cam_pred)),
+        "num_valid_joints": int(joint_valid_count),
+        "num_valid_hands": int(mano_valid_count),
     }
 
-    # 保存到 JSON
     metrics_path = osp.join(output_dir, "metrics.json")
     with open(metrics_path, 'w') as f:
         json.dump(metrics, f, indent=2)
 
-    logger.info(f"Metrics: MPJPE={mpjpe:.2f} mm, MPVPE={mpvpe:.2f} mm")
+    logger.info(f"Metrics: MPJPE={mpjpe}, MPVPE={mpvpe}")
     logger.info(f"Saved metrics to {metrics_path}")
 
     return metrics

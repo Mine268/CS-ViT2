@@ -1,0 +1,36 @@
+{
+  "train_smoke": {
+    "config_name": "stage1-dino_large",
+    "run_dir": "checkpoint/2026-03-22/11-56-08_stage1-dino_large_b44f7b6f215d46cebe9614f3",
+    "checkpoint_dir": "checkpoint/2026-03-22/11-56-08_stage1-dino_large_b44f7b6f215d46cebe9614f3/checkpoints/checkpoint-1",
+    "best_model_dir": "checkpoint/2026-03-22/11-56-08_stage1-dino_large_b44f7b6f215d46cebe9614f3/best_model",
+    "train_source": "/mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/000000.tar",
+    "val_source": "/mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/val/000000.tar",
+    "total_step": 1,
+    "checkpoint_step": 1,
+    "val_max_step": 1,
+    "best_model_info": {
+      "micro_mpjpe": 517.3227306547619,
+      "micro_mpjpe_rel": 108.82246326264881,
+      "micro_mpvpe": 515.538330078125,
+      "micro_mpvpe_rel": 110.31043243408203,
+      "micro_rte": 450.0796813964844
+    },
+    "train_log": "checkpoint/2026-03-22/11-56-08_stage1-dino_large_b44f7b6f215d46cebe9614f3/log.txt"
+  },
+  "test_smoke": {
+    "checkpoint_path": "checkpoint/2026-03-22/11-56-08_stage1-dino_large_b44f7b6f215d46cebe9614f3/best_model",
+    "test_source": "/mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/val/000000.tar",
+    "max_samples": 2,
+    "output_dir": "checkpoint/2026-03-22/11-56-08_stage1-dino_large_b44f7b6f215d46cebe9614f3/test_results_2026-03-22_11-58-25",
+    "predictions_h5": "checkpoint/2026-03-22/11-56-08_stage1-dino_large_b44f7b6f215d46cebe9614f3/test_results_2026-03-22_11-58-25/predictions.h5",
+    "metrics_json": "checkpoint/2026-03-22/11-56-08_stage1-dino_large_b44f7b6f215d46cebe9614f3/test_results_2026-03-22_11-58-25/metrics.json",
+    "metrics": {
+      "mpjpe": 628.466064453125,
+      "mpvpe": 628.233154296875,
+      "num_samples": 2,
+      "num_valid_joints": 42,
+      "num_valid_hands": 2
+    }
+  }
+}

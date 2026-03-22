@@ -419,7 +419,7 @@ class PoseNet(nn.Module):
         princpt: torch.Tensor,
         timestamp: Optional[torch.Tensor] = None,
         joint_cam_gt: Optional[torch.Tensor] = None,
-        joint_valid_gt: Optional[torch.Tensor] = None,
+        joint_3d_valid_gt: Optional[torch.Tensor] = None,
     ):
         """
         测试专用推理函数，返回完整的预测结果（包括原始 MANO 参数和 FK 结果）
@@ -433,7 +433,7 @@ class PoseNet(nn.Module):
             princpt: [B, T, 2] 相机主点 (cx, cy)
             timestamp: [B, T] 时间戳（可选，Stage 2 需要）
             joint_cam_gt: [B, T, 21, 3] GT joints（可选，用于 norm_by_hand 反归一化）
-            joint_valid_gt: [B, T, 21] GT joint valid（可选，用于 norm_by_hand 反归一化）
+            joint_3d_valid_gt: [B, T, 21] GT 3D valid（可选，用于 norm_by_hand 反归一化）
 
         Returns:
             dict: {
@@ -472,18 +472,22 @@ class PoseNet(nn.Module):
                 (trans_for_fk.shape[0], 1), device=trans_for_fk.device
             )
         else:
-            norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
-                joint_cam_gt[:, -1:], joint_valid_gt[:, -1:]
+            norm_scale_pred, norm_valid_pred = self.get_hand_norm_scale(
+                joint_rel_pred[:, -1:],
+                torch.ones_like(joint_rel_pred[:, -1:, :, 0]),
             )
-            norm_scale_pred, _ = self.get_hand_norm_scale(
-                joint_rel_pred[:, -1:], torch.ones_like(joint_rel_pred[:, -1:])
+            if joint_cam_gt is not None and joint_3d_valid_gt is not None:
+                norm_scale_gt, norm_valid_gt = self.get_hand_norm_scale(
+                    joint_cam_gt[:, -1:], joint_3d_valid_gt[:, -1:]
+                )
+            else:
+                norm_scale_gt = torch.zeros_like(norm_scale_pred)
+                norm_valid_gt = torch.zeros_like(norm_valid_pred)
+            norm_scale = (
+                norm_valid_gt * norm_scale_gt[..., None]
+                + (1 - norm_valid_gt) * norm_scale_pred[..., None]
             )
-            norm_scale = ( # [b,1,1]
-                norm_valid_gt[:, -1:] * norm_scale_gt[..., None] +
-                (1 - norm_valid_gt[:, -1:]) * norm_scale_pred[..., None]
-            )
-            norm_valid = norm_valid_gt # [b,1]
-            # [b,1,3]
+            norm_valid = torch.maximum(norm_valid_gt, norm_valid_pred)
             trans_pred_denorm = trans_for_fk * norm_scale
 
         # 4. 转换到相机坐标系（使用反归一化后的 trans）
@@ -528,8 +532,8 @@ class PoseNet(nn.Module):
             result["joint_rel_pred"][:, -1:],
             result["verts_cam_pred"][:, -1:],
             result["verts_rel_pred"][:, -1:],
-            batch["mano_valid"][:, -1:],
-            batch["joint_valid"][:, -1:],
+            batch["has_mano"][:, -1:],
+            batch["joint_3d_valid"][:, -1:],
             result["norm_valid_gt"][:, -1:],
         )
 

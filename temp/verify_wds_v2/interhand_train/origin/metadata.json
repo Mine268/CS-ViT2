@@ -1,0 +1,24 @@
+{
+  "__key__": "25_0104_star_trek_410015_l_23043_train_ih26m_0000",
+  "imgs_path": "Capture25/0104_star_trek/cam410015/image23043.jpg",
+  "handedness": "left",
+  "flip": null,
+  "data_source": "ih26m",
+  "source_split": "train",
+  "intr_type": "real",
+  "source_index": {
+    "capture_id": 25,
+    "seq_name": "0104_star_trek",
+    "cam_id": "410015",
+    "frame_idx": 23043,
+    "aid": 1304484,
+    "handedness": "left",
+    "frame_idx_within_clip": 0
+  },
+  "additional_desc": {
+    "capture_id": 25,
+    "seq_name": "0104_star_trek",
+    "cam_id": "410015",
+    "aid": 1304484
+  }
+}

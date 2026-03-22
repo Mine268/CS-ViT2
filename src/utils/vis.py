@@ -32,7 +32,7 @@ def vis(
     bx = bx if bx is not None else random.randint(0, batch_size - 1)
 
     img_path = batch["imgs_path"][bx][tx]
-    joint_valid = batch["joint_valid"][bx, tx] # [j]
+    joint_2d_valid = batch["joint_2d_valid"][bx, tx] # [j]
     joint_cam_pred = result["joint_cam_pred"][bx, tx] # [j,3]
     joint_img_gt = batch["joint_img"][bx, tx] # [j,2]
 
@@ -75,7 +75,7 @@ def vis(
             thickness=1
         )
 
-        if not (joint_valid[pre] > 0.5 and joint_valid[nex] > 0.5):
+        if not (joint_2d_valid[pre] > 0.5 and joint_2d_valid[nex] > 0.5):
             continue
 
         img = cv2.line(
@@ -95,7 +95,7 @@ def vis(
             thickness=-1
         )
 
-        if joint_valid[jx] < 0.5:
+        if joint_2d_valid[jx] < 0.5:
             continue
 
         img = cv2.circle(

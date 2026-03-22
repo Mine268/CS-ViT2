@@ -58,10 +58,10 @@ TRAIN:
 DATA:
   train:
     source: [
-      /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*,
-      /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/train/*,
-      /mnt/qnap/data/datasets/webdatasets/HO3D_v3/train/*,
-      /mnt/qnap/data/datasets/webdatasets/HOT3D/train/*
+      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*
     ]
     stride: 1
     depth_bins:
@@ -83,8 +83,8 @@ DATA:
       post_clip_shuffle: 512
   val:
     source: [
-      /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/val/*,
-      /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/val/*,
+      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/val/*,
+      /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/val/*,
     ]
     stride: 1
     full_eval: false

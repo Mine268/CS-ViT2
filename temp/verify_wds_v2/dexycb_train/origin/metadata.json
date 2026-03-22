@@ -1,0 +1,18 @@
+{
+  "__key__": "17_6_s1_train_dexycb_0000",
+  "imgs_path": "20200903-subject-04/20200903_112428/839512060362/color_000015.jpg",
+  "handedness": "left",
+  "flip": null,
+  "data_source": "dexycb",
+  "source_split": "train",
+  "intr_type": "real",
+  "source_index": {
+    "subject": "20200903-subject-04",
+    "capture": "20200903_112428",
+    "serial": "839512060362",
+    "frame_idx": 15,
+    "handedness": "left",
+    "frame_idx_within_clip": 0
+  },
+  "additional_desc": {}
+}

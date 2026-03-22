@@ -1,0 +1,16 @@
+{
+  "__key__": "9_5_train_ho3d_0000",
+  "imgs_path": "train/MDF10/rgb/2527.jpg",
+  "handedness": "right",
+  "flip": null,
+  "data_source": "ho3d",
+  "source_split": "train",
+  "intr_type": "real",
+  "source_index": {
+    "seq_name": "MDF10",
+    "frame_name": "2527",
+    "handedness": "right",
+    "frame_idx_within_clip": 0
+  },
+  "additional_desc": {}
+}

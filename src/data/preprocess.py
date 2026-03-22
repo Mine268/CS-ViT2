@@ -357,6 +357,25 @@ def compute_perspective_normalization_rotation(
     return R
 
 
+def _compute_resized_patch_joints(
+    joint_patch_origin: torch.Tensor,
+    patch_bbox: torch.Tensor,
+    patch_size: Tuple[int, int],
+) -> torch.Tensor:
+    patch_h, patch_w = patch_size
+    patch_width = torch.clamp(patch_bbox[..., 2] - patch_bbox[..., 0], min=1e-6)
+    patch_height = torch.clamp(patch_bbox[..., 3] - patch_bbox[..., 1], min=1e-6)
+
+    joint_patch_resized = torch.empty_like(joint_patch_origin)
+    joint_patch_resized[..., 0] = (
+        joint_patch_origin[..., 0] * patch_w / patch_width[..., None]
+    )
+    joint_patch_resized[..., 1] = (
+        joint_patch_origin[..., 1] * patch_h / patch_height[..., None]
+    )
+    return joint_patch_resized
+
+
 @torch.no_grad()
 def preprocess_batch(
     batch_origin,
@@ -368,7 +387,7 @@ def preprocess_batch(
     joint_rep_type: str,
     augmentation_flag: bool,
     device: torch.device,
-    pixel_aug = None,
+    pixel_aug=None,
     perspective_normalization: bool = False,
 ):
     """
@@ -382,307 +401,398 @@ def preprocess_batch(
         pixel_aug: 像素级增强器对象（可选），由调用方创建和管理
         perspective_normalization: 是否进行透视归一化（将bbox中心旋转到主点）
     """
-    # pixel_aug由调用方传入，不在此创建
-    B, T = batch_origin["joint_cam"].shape[:2]
-    trans_2d_mat = torch.eye(3, device=device).float()[None, None, :].expand(B, T, -1, -1)
-
+    batch_size, num_frames = batch_origin["joint_img"].shape[:2]
+    trans_2d_mat = (
+        torch.eye(3, device=device, dtype=torch.float32)[None, None]
+        .repeat(batch_size, num_frames, 1, 1)
+    )
     correction_rot_mat = None
 
-    if not augmentation_flag and not perspective_normalization:
-        # 数据规整
-        # imgs_path, flip
-        imgs_path: List[List[str]] = batch_origin["imgs_path"]
-        flip: List[bool] = [v == "left" for v in batch_origin["handedness"]]
+    sample_keys = batch_origin.get(
+        "__key__", [f"sample_{idx}" for idx in range(batch_size)]
+    )
+    imgs_path: List[List[str]] = batch_origin["imgs_path"]
+    handedness: List[str] = batch_origin["handedness"]
+    data_source: List[str] = batch_origin.get(
+        "data_source", ["unknown" for _ in range(batch_size)]
+    )
+    source_split: List[str] = batch_origin.get(
+        "source_split", ["unknown" for _ in range(batch_size)]
+    )
+    source_index = batch_origin.get(
+        "source_index",
+        [
+            [{"frame_idx_within_clip": frame_idx} for frame_idx in range(num_frames)]
+            for _ in range(batch_size)
+        ],
+    )
+    intr_type: List[str] = batch_origin.get(
+        "intr_type", ["unknown" for _ in range(batch_size)]
+    )
+    additional_desc = batch_origin.get(
+        "additional_desc",
+        [[{} for _ in range(num_frames)] for _ in range(batch_size)],
+    )
+    flip: List[bool] = [value == "left" for value in handedness]
 
-        # 计算patches对应的范围，以及patch图像分割
-        # hand_bbox, patches_bbox, patches
-        hand_bbox: torch.Tensor = batch_origin["hand_bbox"].to(device)  # [B,T,4]
-        hand_bbox_center = (hand_bbox[..., :2] + hand_bbox[..., 2:]) * 0.5  # [B,T,2]
-        width, height = torch.split(hand_bbox[..., 2:] - hand_bbox[..., :2], 1, dim=-1)  # [B,T]
-        half_edge_len = torch.max(width, height) * patch_expanstion * 0.5  # [B,T]
-        patch_bbox_k = torch.stack(  # [B,T,4,2]
+    hand_bbox: torch.Tensor = batch_origin["hand_bbox"].to(device).clone()
+    joint_img: torch.Tensor = batch_origin["joint_img"].to(device).clone()
+    joint_cam: torch.Tensor = batch_origin["joint_cam"].to(device).clone()
+    joint_rel: torch.Tensor = batch_origin["joint_rel"].to(device).clone()
+    joint_2d_valid: torch.Tensor = batch_origin.get(
+        "joint_2d_valid", batch_origin["joint_valid"]
+    ).to(device).clone()
+    joint_3d_valid: torch.Tensor = batch_origin.get(
+        "joint_3d_valid", batch_origin["joint_valid"]
+    ).to(device).clone()
+    mano_pose: torch.Tensor = batch_origin["mano_pose"].to(device).clone()
+    mano_shape: torch.Tensor = batch_origin["mano_shape"].to(device).clone()
+    has_mano: torch.Tensor = batch_origin.get(
+        "has_mano", batch_origin["mano_valid"]
+    ).to(device).clone()
+    timestamp: torch.Tensor = batch_origin["timestamp"].to(device).clone()
+    focal: torch.Tensor = batch_origin["focal"].to(device).clone()
+    princpt: torch.Tensor = batch_origin["princpt"].to(device).clone()
+    has_intr_origin = batch_origin.get("has_intr", None)
+    if has_intr_origin is None:
+        has_intr = torch.ones_like(timestamp)
+    else:
+        has_intr = has_intr_origin.to(device).clone()
+    has_intr_mask = has_intr > 0.5
+
+    if not augmentation_flag and not perspective_normalization:
+        hand_bbox_center = (hand_bbox[..., :2] + hand_bbox[..., 2:]) * 0.5
+        width, height = torch.split(hand_bbox[..., 2:] - hand_bbox[..., :2], 1, dim=-1)
+        half_edge_len = torch.max(width, height) * patch_expanstion * 0.5
+        patch_bbox_corners = torch.stack(
             [
                 hand_bbox_center - half_edge_len,
-                torch.stack([
-                    hand_bbox_center[..., 0] + half_edge_len[..., 0],
-                    hand_bbox_center[..., 1] - half_edge_len[..., 0]
-                ], dim=-1),
+                torch.stack(
+                    [
+                        hand_bbox_center[..., 0] + half_edge_len[..., 0],
+                        hand_bbox_center[..., 1] - half_edge_len[..., 0],
+                    ],
+                    dim=-1,
+                ),
                 hand_bbox_center + half_edge_len,
-                torch.stack([
-                    hand_bbox_center[..., 0] - half_edge_len[..., 0],
-                    hand_bbox_center[..., 1] + half_edge_len[..., 0]
-                ], dim=-1),
-            ], dim=2
+                torch.stack(
+                    [
+                        hand_bbox_center[..., 0] - half_edge_len[..., 0],
+                        hand_bbox_center[..., 1] + half_edge_len[..., 0],
+                    ],
+                    dim=-1,
+                ),
+                ],
+            dim=2,
         )
         patch_bbox: torch.Tensor = torch.cat(
-            [patch_bbox_k[:, :, 0], patch_bbox_k[:, :, 2]], dim=-1
-        )  # [B,T,4]
+            [patch_bbox_corners[:, :, 0], patch_bbox_corners[:, :, 2]], dim=-1
+        )
         patches = []
         for bx, img_orig_tensor in enumerate(batch_origin["imgs"]):
             patch = KT.crop_and_resize(
-                img_orig_tensor.to(device).float() / 255,
-                patch_bbox_k[bx],
+                img_orig_tensor.to(device).float() / 255.0,
+                patch_bbox_corners[bx],
                 patch_size,
-                mode="bilinear"
+                mode="bilinear",
             )
             patches.append(patch)
-        patches: torch.Tensor = torch.stack(patches)
-
-        # 处理关节点二维位置
-        joint_img: torch.Tensor = batch_origin["joint_img"].to(device)  # [B,T,J,2]
-        joint_patch_bbox: torch.Tensor = joint_img - patch_bbox_k[:, :, :1]  # [B,T,J,2]
-        joint_hand_bbox: torch.Tensor = joint_img - hand_bbox[:, :, None, :2]  # [B,T,J,2]
-
-        # 三维位置
-        joint_cam: torch.Tensor = batch_origin["joint_cam"].to(device)  # [B,T,J,3]
-        joint_rel: torch.Tensor = batch_origin["joint_rel"].to(device)  # [B,T,J,3]
-        joint_valid: torch.Tensor = batch_origin["joint_valid"].to(device)  # [B,T,J]
-
-        # MANO标注
-        mano_pose: torch.Tensor = batch_origin["mano_pose"].to(device)  # [B,T,48]
-        mano_shape: torch.Tensor = batch_origin["mano_shape"].to(device)  # [B,T,10]
-        mano_valid: torch.Tensor = batch_origin["mano_valid"].to(device)  # [B,T,10]
-
-        # timestamp
-        timestamp: torch.Tensor = batch_origin["timestamp"].to(device)  # [B,T]
-
-        # focal, princpt
-        focal: torch.Tensor = batch_origin["focal"].to(device)  # [B,T,2]
-        princpt: torch.Tensor = batch_origin["princpt"].to(device)  # [B,T,2]
+        patches = torch.stack(patches)
     else:
-        # focal, princpt
-        focal: torch.Tensor = batch_origin["focal"].to(device)  # [B,T,2]
-        princpt: torch.Tensor = batch_origin["princpt"].to(device)  # [B,T,2]
+        safe_focal = torch.where(has_intr_mask[..., None], focal, torch.ones_like(focal))
+        safe_princpt = torch.where(
+            has_intr_mask[..., None], princpt, torch.zeros_like(princpt)
+        )
 
-        # === perspective normalization（独立于 augmentation） ===
         if perspective_normalization:
-            hand_bbox_orig: torch.Tensor = batch_origin["hand_bbox"].to(device)
-            correction_rot_mat = compute_perspective_normalization_rotation(
-                hand_bbox_orig, focal, princpt
-            )  # [B,T,3,3]，基于原始内参
+            correction_rot_candidate = compute_perspective_normalization_rotation(
+                hand_bbox, safe_focal, safe_princpt
+            )
+            eye = torch.eye(3, device=device, dtype=torch.float32)[None, None].repeat(
+                batch_size, num_frames, 1, 1
+            )
+            correction_rot_mat = torch.where(
+                has_intr_mask[..., None, None],
+                correction_rot_candidate,
+                eye,
+            )
 
-        # === 增强参数 ===
         if augmentation_flag:
-            rad = torch.rand(B, 1, device=device).expand(-1, T) * 2 * torch.pi  # [B, T]
-            # [B, T], [B, T]
+            rad = torch.rand(batch_size, 1, device=device).expand(-1, num_frames)
+            rad = rad * 2.0 * torch.pi
             scale_z = (
-                torch.rand(B, 1, device=device).expand(-1, T)
+                torch.rand(batch_size, 1, device=device).expand(-1, num_frames)
                 * (scale_z_range[1] - scale_z_range[0])
                 + scale_z_range[0]
             )
             scale_f = (
-                torch.rand(B, 1, device=device).expand(-1, T)
+                torch.rand(batch_size, 1, device=device).expand(-1, num_frames)
                 * (scale_f_range[1] - scale_f_range[0])
                 + scale_f_range[0]
             )
             focal_new = focal * scale_f[:, :, None]
-            princpt_noise = torch.randn(B, 1, 2, device=device).expand(-1, T, -1)
-            princpt_noise = princpt_noise * torch.norm(princpt, dim=-1, keepdim=True) * 0.1111111
+            princpt_noise = torch.randn(batch_size, 1, 2, device=device).expand(
+                -1, num_frames, -1
+            )
+            princpt_noise = (
+                princpt_noise
+                * torch.norm(princpt, dim=-1, keepdim=True)
+                * 0.1111111
+            )
             princpt_new = princpt_noise + princpt
-            persp_dir_rad = torch.rand(B, 1, device=device).expand(-1, T) * 2 * torch.pi
-            persp_rot_rad = torch.rand(B, 1, device=device).expand(-1, T) * persp_rot_max
+            persp_dir_rad = (
+                torch.rand(batch_size, 1, device=device).expand(-1, num_frames)
+                * 2.0
+                * torch.pi
+            )
+            persp_rot_rad = (
+                torch.rand(batch_size, 1, device=device).expand(-1, num_frames)
+                * persp_rot_max
+            )
             persp_axis_angle = (
                 torch.stack(
                     [
                         torch.cos(persp_dir_rad),
                         torch.sin(persp_dir_rad),
-                        torch.zeros(B, T, device=device),
+                        torch.zeros(batch_size, num_frames, device=device),
                     ],
                     dim=-1,
                 )
                 * persp_rot_rad[..., None]
             )
-            # 归一化与透视增强互斥
             if perspective_normalization:
-                persp_axis_angle = torch.zeros(B, T, 3, device=device)
+                persp_axis_angle = torch.zeros(
+                    batch_size, num_frames, 3, device=device, dtype=torch.float32
+                )
         else:
-            # 不做增强 → identity 参数（仅 perspective_normalization 走此路径）
-            rad = torch.zeros(B, T, device=device)
-            scale_z = torch.ones(B, T, device=device)
+            rad = torch.zeros(batch_size, num_frames, device=device)
+            scale_z = torch.ones(batch_size, num_frames, device=device)
             focal_new = focal.clone()
             princpt_new = princpt.clone()
-            persp_axis_angle = torch.zeros(B, T, 3, device=device)
+            persp_axis_angle = torch.zeros(
+                batch_size, num_frames, 3, device=device, dtype=torch.float32
+            )
 
-        # === 组合变换矩阵 ===
-        # [B,T,3,3]
-        trans_3d_mat = get_trans_3d_mat(rad, scale_z, persp_axis_angle)
-        trans_2d_mat = get_trans_2d_mat(
-            rad, 1 / scale_z, focal, princpt, focal_new, princpt_new, persp_axis_angle
+        safe_focal_new = torch.where(
+            has_intr_mask[..., None], focal_new, torch.ones_like(focal_new)
         )
-        # 归一化旋转右乘
+        safe_princpt_new = torch.where(
+            has_intr_mask[..., None], princpt_new, torch.zeros_like(princpt_new)
+        )
+
+        trans_3d_mat = get_trans_3d_mat(rad, scale_z, persp_axis_angle)
+        trans_2d_candidate = get_trans_2d_mat(
+            rad,
+            1.0 / scale_z,
+            safe_focal,
+            safe_princpt,
+            safe_focal_new,
+            safe_princpt_new,
+            persp_axis_angle,
+        )
+        trans_2d_mat = torch.where(
+            has_intr_mask[..., None, None],
+            trans_2d_candidate,
+            trans_2d_mat,
+        )
+
         if correction_rot_mat is not None:
             trans_3d_mat = trans_3d_mat @ correction_rot_mat
-            old_intr, old_intr_inv = build_intrinsic_matrices(focal, princpt)
+            old_intr, old_intr_inv = build_intrinsic_matrices(safe_focal, safe_princpt)
             correction_2d = old_intr @ correction_rot_mat @ old_intr_inv
-            trans_2d_mat = trans_2d_mat @ correction_2d
+            trans_2d_mat = torch.where(
+                has_intr_mask[..., None, None],
+                trans_2d_mat @ correction_2d,
+                trans_2d_mat,
+            )
 
-        # 带数据增强的数据规整
-        # imgs_path, flip
-        imgs_path: List[List[str]] = batch_origin["imgs_path"]
-        flip: List[bool] = [v == "left" for v in batch_origin["handedness"]]
+        frame_has_3d = torch.any(joint_3d_valid > 0.5, dim=-1)
+        joint_cam_aug = torch.einsum("...jd,...nd->...jn", joint_cam, trans_3d_mat)
+        joint_rel_aug = joint_cam_aug - joint_cam_aug[:, :, :1]
+        joint_cam = torch.where(frame_has_3d[..., None, None], joint_cam_aug, joint_cam)
+        joint_rel = torch.where(frame_has_3d[..., None, None], joint_rel_aug, joint_rel)
 
-        # 重新计算三维关节点
-        # joint_cam, joint_rel, joint_valid
-        joint_cam: torch.Tensor = batch_origin["joint_cam"].to(device)  # [B,T,J,3]
-        joint_cam = torch.einsum("...jd,...nd->...jn", joint_cam, trans_3d_mat)
-        joint_rel = joint_cam - joint_cam[:, :, :1]
-        joint_valid: torch.Tensor = batch_origin["joint_valid"].to(device)  # [B,T,J]
+        frame_has_mano = (has_mano > 0.5).reshape(-1)
+        if torch.any(frame_has_mano):
+            mano_pose_flat = mano_pose.reshape(-1, mano_pose.shape[-1]).clone()
+            root_axis_angle = torch.zeros(
+                (batch_size * num_frames, 3),
+                device=device,
+                dtype=mano_pose.dtype,
+            )
+            root_axis_angle[:, 2] = rad.reshape(-1)
+            root_rot_mat = KC.axis_angle_to_rotation_matrix(root_axis_angle)
+            if correction_rot_mat is not None:
+                root_rot_mat = root_rot_mat @ correction_rot_mat.reshape(-1, 3, 3)
+            if persp_rot_max > 0 and not perspective_normalization:
+                persp_rot_mat = KC.axis_angle_to_rotation_matrix(
+                    persp_axis_angle.reshape(-1, 3)
+                )
+                root_rot_mat = persp_rot_mat @ root_rot_mat
+            mano_root_rot = KC.axis_angle_to_rotation_matrix(mano_pose_flat[:, :3])
+            mano_root_rot = KC.rotation_matrix_to_axis_angle(root_rot_mat @ mano_root_rot)
+            mano_pose_flat[frame_has_mano, :3] = mano_root_rot[frame_has_mano]
+            mano_pose = mano_pose_flat.reshape(batch_size, num_frames, -1)
 
-        # 对MANO参数进行变换
-        mano_pose: torch.Tensor = batch_origin["mano_pose"].to(device)  # [B,T,48]
-        mano_shape: torch.Tensor = batch_origin["mano_shape"].to(device)  # [B,T,10]
-        mano_valid: torch.Tensor = batch_origin["mano_valid"].to(device)  # [B,T]
-        mano_pose_root = KC.axis_angle_to_rotation_matrix(
-            mano_pose[:, :, :3].reshape(-1, 3)
-        )  # [B*T,3,3]
-        # R_z: Z轴旋转（aug_flag=False 时 rad=0，R_z=I）
-        root_rot_mat = KC.axis_angle_to_rotation_matrix(
-            (torch.Tensor([[[0, 0, 1]]]).to(device) * rad[:, :, None]).reshape(-1, 3)
-        )  # [B*T,3,3]
-        # R_corr: 透视归一化旋转（右乘，最先执行）
-        if correction_rot_mat is not None:
-            root_rot_mat = root_rot_mat @ correction_rot_mat.reshape(-1, 3, 3)
-        # R_persp: 透视旋转增强（归一化启用时已被置零，双重保险跳过）
-        if persp_rot_max > 0 and not perspective_normalization:
-            persp_rot_mat = KC.axis_angle_to_rotation_matrix(
-                persp_axis_angle.reshape(-1, 3)
-            )  # [B*T,3,3]
-            root_rot_mat = persp_rot_mat @ root_rot_mat  # R_persp @ R_z [@ R_corr]
-        mano_pose_root = KC.rotation_matrix_to_axis_angle(
-            root_rot_mat @ mano_pose_root
-        ).reshape(B, T, 3)  # [B,T,3]
-        mano_pose[:, :, :3] = mano_pose_root
+        joint_mask = (joint_2d_valid < 0.5)[..., None].expand(-1, -1, -1, 2)
+        joint_img = apply_perspective_to_points(trans_2d_mat, joint_img)
 
-        # timestamp
-        timestamp: torch.Tensor = batch_origin["timestamp"].to(device)  # [B,T]
+        min_xy = torch.min(
+            joint_img.masked_fill(joint_mask, float("inf")), dim=-2
+        ).values
+        max_xy = torch.max(
+            joint_img.masked_fill(joint_mask, -float("inf")), dim=-2
+        ).values
+        hand_bbox_new = torch.cat([min_xy, max_xy], dim=-1)
+        valid_joint_count = torch.sum(joint_2d_valid > 0.5, dim=-1, keepdim=True)
+        no_valid_joint = valid_joint_count == 0
+        hand_bbox = torch.where(no_valid_joint.expand_as(hand_bbox), hand_bbox, hand_bbox_new)
 
-        # 对2D标注进行变换
-        # 1. 首先变换joint_img，注意部分标注是无效的，需要滤掉
-        joint_mask = (joint_valid < 0.5)[..., None].expand(-1, -1, -1, 2)  # [B,T,J]
-        joint_img: torch.Tensor = batch_origin["joint_img"].to(device)  # [B,T,J,2]
-        joint_img = apply_perspective_to_points(trans_2d_mat, joint_img)  # [B,T,J,2]
-        # 2. 然后利用joint_img计算hand_bbox和patch_bbox
-        xm, ym = torch.split(
-            torch.min(joint_img.masked_fill(joint_mask, float("inf")), dim=-2).values,
-            1,
-            dim=-1,
-        )  # [B,T]*2
-        xM, yM = torch.split(
-            torch.max(joint_img.masked_fill(joint_mask, -float("inf")), dim=-2).values,
-            1,
-            dim=-1,
-        )  # [B,T]*2
-        hand_bbox = torch.cat([xm, ym, xM, yM], dim=-1)  # [B,T,4]
-        xc, yc = (xm + xM) * 0.5, (ym + yM) * 0.5
-        half_edge_len = (  # [B,T]
+        center = (hand_bbox[..., :2] + hand_bbox[..., 2:]) * 0.5
+        half_edge_len = (
             torch.max(hand_bbox[..., 2:] - hand_bbox[..., :2], dim=-1).values
             * 0.5
             * patch_expanstion
         )
-        patch_bbox = torch.cat([  # [B,T,4]
-            xc - half_edge_len[:, :, None], yc - half_edge_len[:, :, None],
-            xc + half_edge_len[:, :, None], yc + half_edge_len[:, :, None],
-        ], dim=-1)
-        # 3. 利用新计算的hand_bbox和patch_bbox计算joint_hand_bbox和joint_patch_bbox
-        joint_hand_bbox: torch.Tensor = joint_img - hand_bbox[:, :, None, :2]  # [B,T,J,2]
-        joint_patch_bbox: torch.Tensor = joint_img - patch_bbox[:, :, None, :2]  # [B,T,J,2]
-        # 4. 利用计算的patch_bbox进行采样
-        # 使用 warp_perspective + 组合 homography，避免 crop_and_resize
-        # 对高畸变四边形的数值不稳定问题
-        # A_inv 将 warped 空间的 patch_bbox 映射到 [0, patch_w] x [0, patch_h]
-        # M_crop = A_inv @ trans_2d_mat: 原图 → warped → patch
-        sx = (patch_bbox[..., 2] - patch_bbox[..., 0]) / patch_size[1]  # [B,T]
-        sy = (patch_bbox[..., 3] - patch_bbox[..., 1]) / patch_size[0]  # [B,T]
-        A_inv = torch.zeros(B, T, 3, 3, device=device, dtype=torch.float32)
-        A_inv[..., 0, 0] = 1.0 / sx
-        A_inv[..., 1, 1] = 1.0 / sy
-        A_inv[..., 0, 2] = -patch_bbox[..., 0] / sx
-        A_inv[..., 1, 2] = -patch_bbox[..., 1] / sy
-        A_inv[..., 2, 2] = 1.0
-        M_crop = A_inv @ trans_2d_mat  # [B,T,3,3]
+        patch_bbox = torch.cat(
+            [
+                center[..., 0:1] - half_edge_len[..., None],
+                center[..., 1:2] - half_edge_len[..., None],
+                center[..., 0:1] + half_edge_len[..., None],
+                center[..., 1:2] + half_edge_len[..., None],
+            ],
+            dim=-1,
+        )
+
+        sx = (patch_bbox[..., 2] - patch_bbox[..., 0]) / patch_size[1]
+        sy = (patch_bbox[..., 3] - patch_bbox[..., 1]) / patch_size[0]
+        a_inv = torch.zeros(batch_size, num_frames, 3, 3, device=device, dtype=torch.float32)
+        a_inv[..., 0, 0] = 1.0 / sx
+        a_inv[..., 1, 1] = 1.0 / sy
+        a_inv[..., 0, 2] = -patch_bbox[..., 0] / sx
+        a_inv[..., 1, 2] = -patch_bbox[..., 1] / sy
+        a_inv[..., 2, 2] = 1.0
+        m_crop = a_inv @ trans_2d_mat
+
         patches = []
         for bx, img_orig_tensor in enumerate(batch_origin["imgs"]):
             patch = KT.warp_perspective(
-                img_orig_tensor.to(device).float() / 255,
-                M_crop[bx],
+                img_orig_tensor.to(device).float() / 255.0,
+                m_crop[bx],
                 tuple(patch_size),
-                mode="bilinear"
+                mode="bilinear",
             )
             patches.append(patch)
-        patches: torch.Tensor = torch.stack(patches)
+        patches = torch.stack(patches)
 
-        # 应用像素级增强（如果配置了）
         if pixel_aug is not None:
             patches = pixel_aug(patches)
 
-        # 更新focal&princpt
-        focal = focal_new
-        princpt = princpt_new
+        focal = torch.where(has_intr_mask[..., None], focal_new, focal)
+        princpt = torch.where(has_intr_mask[..., None], princpt_new, princpt)
 
-    # 进行左右翻转
-    for bx in range(len(imgs_path)):
-        if flip[bx]:
-            T, C, H, W = batch_origin["imgs"][bx].shape
-            patch_bbox_w = patch_bbox[bx, :, 2] - patch_bbox[bx, :, 0]  # [T]
-            hand_bbox_w =  hand_bbox[bx, :, 2] - hand_bbox[bx, :, 0]  # [T]
+    joint_hand_origin = joint_img - hand_bbox[:, :, None, :2]
+    joint_patch_origin = joint_img - patch_bbox[:, :, None, :2]
 
-            patches[bx] = torch.flip(patches[bx], dims=[-1,])
-            patch_bbox[bx, :, 0], patch_bbox[bx, :, 2] = (
-                W - patch_bbox[bx, :, 2],
-                W - patch_bbox[bx, :, 0],
-            )
-            hand_bbox[bx, :, 0], hand_bbox[bx, :, 2] = (
-                W - hand_bbox[bx, :, 2],
-                W - hand_bbox[bx, :, 0]
-            )
-            joint_img[bx, :, :, 0] = W - joint_img[bx, :, :, 0]
-            joint_patch_bbox[bx, :, :, 0] = patch_bbox_w[:, None] - joint_patch_bbox[bx, :, :, 0]
-            joint_hand_bbox[bx, :, :, 0] = hand_bbox_w[:, None] - joint_hand_bbox[bx, :, :, 0]
-            joint_cam[bx, :, :, 0] *= -1
-            joint_rel[bx, :, :, 0] *= -1
+    for bx, do_flip in enumerate(flip):
+        if not do_flip:
+            continue
 
-            mano_pose_bx = rearrange(mano_pose[bx], "t (j d) -> t j d", d=3)
-            mano_pose_bx[:, :, 1:] *= -1
-            mano_pose[bx] = rearrange(mano_pose_bx, "t j d -> t (j d)")
+        _, _, _, width = batch_origin["imgs"][bx].shape
+        patch_bbox_w = patch_bbox[bx, :, 2] - patch_bbox[bx, :, 0]
+        hand_bbox_w = hand_bbox[bx, :, 2] - hand_bbox[bx, :, 0]
 
-            princpt[bx, :, 0] = W - princpt[bx, :, 0]
+        patches[bx] = torch.flip(patches[bx], dims=[-1])
+        patch_bbox[bx, :, 0], patch_bbox[bx, :, 2] = (
+            width - patch_bbox[bx, :, 2],
+            width - patch_bbox[bx, :, 0],
+        )
+        hand_bbox[bx, :, 0], hand_bbox[bx, :, 2] = (
+            width - hand_bbox[bx, :, 2],
+            width - hand_bbox[bx, :, 0],
+        )
+        joint_img[bx, :, :, 0] = width - joint_img[bx, :, :, 0]
+        joint_patch_origin[bx, :, :, 0] = (
+            patch_bbox_w[:, None] - joint_patch_origin[bx, :, :, 0]
+        )
+        joint_hand_origin[bx, :, :, 0] = (
+            hand_bbox_w[:, None] - joint_hand_origin[bx, :, :, 0]
+        )
+        joint_cam[bx, :, :, 0] *= -1.0
+        joint_rel[bx, :, :, 0] *= -1.0
 
-    # 更新旋转表示
+        mano_pose_bx = rearrange(mano_pose[bx], "t (j d) -> t j d", d=3)
+        mano_pose_bx[:, :, 1:] *= -1.0
+        mano_pose[bx] = rearrange(mano_pose_bx, "t j d -> t (j d)")
+
+        intr_mask = has_intr[bx] > 0.5
+        princpt[bx, intr_mask, 0] = width - princpt[bx, intr_mask, 0]
+
+    joint_patch_resized = _compute_resized_patch_joints(
+        joint_patch_origin,
+        patch_bbox,
+        patch_size,
+    )
+
     if joint_rep_type == "3":
         pass
     elif joint_rep_type == "6d":
-        B, T = mano_pose.shape[:2]
-        mano_pose = rearrange(mano_pose, "b t (j d) -> (b t j) d", j=MANO_JOINT_COUNT)
-        mano_pose = KC.axis_angle_to_rotation_matrix(mano_pose) # [N,3,3]
+        batch_size, num_frames = mano_pose.shape[:2]
+        mano_pose = rearrange(
+            mano_pose, "b t (j d) -> (b t j) d", j=MANO_JOINT_COUNT
+        )
+        mano_pose = KC.axis_angle_to_rotation_matrix(mano_pose)
         mano_pose = rotation_matrix_to_rotation6d(mano_pose)
-        mano_pose = rearrange(mano_pose, "(b t j) d -> b t (j d)", b=B, t=T)
+        mano_pose = rearrange(
+            mano_pose, "(b t j) d -> b t (j d)", b=batch_size, t=num_frames
+        )
     elif joint_rep_type == "quat":
-        B, T = mano_pose.shape[:2]
-        mano_pose = rearrange(mano_pose, "b t (j d) -> (b t j) d", j=MANO_JOINT_COUNT)
-        mano_pose = KC.axis_angle_to_quaternion(mano_pose) # [N,4]
-        mano_pose = rearrange(mano_pose, "(b t j) d -> b t (j d)", b=B, t=T)
+        batch_size, num_frames = mano_pose.shape[:2]
+        mano_pose = rearrange(
+            mano_pose, "b t (j d) -> (b t j) d", j=MANO_JOINT_COUNT
+        )
+        mano_pose = KC.axis_angle_to_quaternion(mano_pose)
+        mano_pose = rearrange(
+            mano_pose, "(b t j) d -> b t (j d)", b=batch_size, t=num_frames
+        )
     else:
         raise NotImplementedError(f"Unsupported rotation type={joint_rep_type}")
 
-    if mano_pose[mano_valid > 0.5].isnan().any().cpu().item():
+    valid_mano_mask = has_mano > 0.5
+    if torch.any(valid_mano_mask) and mano_pose[valid_mano_mask].isnan().any().cpu().item():
         raise ValueError("MANO contains NaN")
 
-    return {
+    batch_out = {
+        "__key__": sample_keys,
         "imgs_path": imgs_path,
+        "handedness": handedness,
+        "data_source": data_source,
+        "source_split": source_split,
+        "source_index": source_index,
+        "intr_type": intr_type,
+        "additional_desc": additional_desc,
         "flip": flip,
         "patches": patches,
         "patch_bbox": patch_bbox,
         "hand_bbox": hand_bbox,
         "joint_img": joint_img,
-        "joint_patch_bbox": joint_patch_bbox,
-        "joint_hand_bbox": joint_hand_bbox,
+        "joint_hand_origin": joint_hand_origin,
+        "joint_patch_origin": joint_patch_origin,
+        "joint_patch_resized": joint_patch_resized,
+        "joint_hand_bbox": joint_hand_origin,
+        "joint_patch_bbox": joint_patch_origin,
         "joint_cam": joint_cam,
         "joint_rel": joint_rel,
-        "joint_valid": joint_valid,
+        "joint_2d_valid": joint_2d_valid,
+        "joint_3d_valid": joint_3d_valid,
+        "joint_valid": joint_2d_valid,
         "mano_pose": mano_pose,
         "mano_shape": mano_shape,
-        "mano_valid": mano_valid,
+        "has_mano": has_mano,
+        "mano_valid": has_mano,
+        "has_intr": has_intr,
         "timestamp": timestamp,
         "focal": focal,
-        "princpt": princpt
-    }, trans_2d_mat, correction_rot_mat
+        "princpt": princpt,
+    }
+    return batch_out, trans_2d_mat, correction_rot_mat

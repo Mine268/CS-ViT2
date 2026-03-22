@@ -102,7 +102,7 @@ def test_predict_full_with_valid_gt(model):
         ], dtype=torch.float32, device=device),
         "timestamp": torch.zeros(B, 1, device=device),
         "joint_cam": torch.randn(B, 1, 21, 3, device=device) * 100,  # GT joints
-        "joint_valid": torch.ones(B, 1, 21, device=device),  # 所有 joints 都有效
+        "joint_3d_valid": torch.ones(B, 1, 21, device=device),  # 所有 joints 都有效
     }
 
     # 推理
@@ -114,7 +114,7 @@ def test_predict_full_with_valid_gt(model):
             princpt=batch["princpt"],
             timestamp=batch["timestamp"],
             joint_cam_gt=batch["joint_cam"],
-            joint_valid_gt=batch["joint_valid"],
+            joint_3d_valid_gt=batch["joint_3d_valid"],
         )
 
     # 验证返回值
@@ -161,13 +161,13 @@ def test_predict_full_with_invalid_gt(model):
         ], dtype=torch.float32, device=device),
         "timestamp": torch.zeros(B, 1, device=device),
         "joint_cam": torch.randn(B, 1, 21, 3, device=device) * 100,  # GT joints
-        "joint_valid": torch.ones(B, 1, 21, device=device),  # 初始化为全部有效
+        "joint_3d_valid": torch.ones(B, 1, 21, device=device),  # 初始化为全部有效
     }
 
     # 手动设置部分 norm_idx joints 为无效
     # norm_idx = [0, 5, 9, 13, 17]（默认值）
-    batch["joint_valid"][0, 0, 0] = 0  # 第 0 个样本的第 0 个 joint 无效
-    batch["joint_valid"][1, 0, 5] = 0  # 第 1 个样本的第 5 个 joint 无效
+    batch["joint_3d_valid"][0, 0, 0] = 0  # 第 0 个样本的第 0 个 joint 无效
+    batch["joint_3d_valid"][1, 0, 5] = 0  # 第 1 个样本的第 5 个 joint 无效
 
     # 推理
     with torch.no_grad():
@@ -178,7 +178,7 @@ def test_predict_full_with_invalid_gt(model):
             princpt=batch["princpt"],
             timestamp=batch["timestamp"],
             joint_cam_gt=batch["joint_cam"],
-            joint_valid_gt=batch["joint_valid"],
+            joint_3d_valid_gt=batch["joint_3d_valid"],
         )
 
     # 验证返回值
@@ -236,7 +236,7 @@ def test_predict_full_without_gt(model):
             princpt=batch["princpt"],
             timestamp=batch["timestamp"],
             joint_cam_gt=None,       # 无 GT
-            joint_valid_gt=None,     # 无 GT
+            joint_3d_valid_gt=None,     # 无 GT
         )
 
     # 验证返回值
@@ -279,14 +279,14 @@ def test_predict_full_mixed_validity(model):
         "princpt": torch.ones(B, 1, 2, device=device) * 512,
         "timestamp": torch.zeros(B, 1, device=device),
         "joint_cam": torch.randn(B, 1, 21, 3, device=device) * 100,
-        "joint_valid": torch.ones(B, 1, 21, device=device),
+        "joint_3d_valid": torch.ones(B, 1, 21, device=device),
     }
 
     # 设置混合 validity
     # 样本 0, 1: norm_idx joints 全部有效（norm_valid_gt=1）
     # 样本 2, 3: 部分 norm_idx joints 无效（norm_valid_gt=0）
-    batch["joint_valid"][2, 0, 0] = 0  # 样本 2
-    batch["joint_valid"][3, 0, 5] = 0  # 样本 3
+    batch["joint_3d_valid"][2, 0, 0] = 0  # 样本 2
+    batch["joint_3d_valid"][3, 0, 5] = 0  # 样本 3
 
     # 推理
     with torch.no_grad():
@@ -297,7 +297,7 @@ def test_predict_full_mixed_validity(model):
             princpt=batch["princpt"],
             timestamp=batch["timestamp"],
             joint_cam_gt=batch["joint_cam"],
-            joint_valid_gt=batch["joint_valid"],
+            joint_3d_valid_gt=batch["joint_3d_valid"],
         )
 
     # 验证返回值
