@@ -29,6 +29,12 @@
   - 推荐的 `min_cell_samples / alpha` 设置
   - COCO-WholeBody 的采样比例与 loss 设计建议
 
+- **[DATASET_REWEIGHT_CONFIG.md](DATASET_REWEIGHT_CONFIG.md)** - dataset-level reweight 配置说明
+  - `DATA.train.reweight` 的配置位置与生效规则
+  - 与 `depth_bins` 的互斥关系
+  - 当前三份 `no_norm` 配置的默认权重
+  - `COCO-WholeBody` 在 reweight 下的注意事项
+
 - **[CHECKPOINT_TEST_WORKFLOW.md](CHECKPOINT_TEST_WORKFLOW.md)** - 指定 checkpoint 在指定数据集上的单卡测试流程
   - 如何用 `script.test` 运行单卡测试
   - 如何用 `script.evaluate` 计算完整指标
@@ -186,9 +192,10 @@
 
 ## 📅 更新日期
 
-**最后更新**: 2026-03-22
+**最后更新**: 2026-03-29
 
 **重要更新**:
+- 2026-03-29: 新增 `DATA.train.reweight` 配置与对应 loader，三份 `no_norm` 配置已对齐到 9 数据集并默认启用 dataset-level reweight
 - 2026-03-22: 增加当前数据集深度分布与 COCO 训练方案文档，明确 `dataset × depth-bin` 和 COCO 采样/loss 的推荐设置
 - 2026-03-22: 增加 `swinv2-large-patch4-window12-192-22k` backbone 兼容代码和 `stage1-swinv2_large.yaml`
 - 2026-03-22: 增加 `COCO-WholeBody` 专用 2D patch auxiliary loss，并在 val/test/evaluate 中显式排除 COCO 的 3D 指标统计

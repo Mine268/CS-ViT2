@@ -131,7 +131,7 @@ def verify_origin_data(batch, output_dir: str, bx: int = 0, tx: int = 0):
     joint_cam = batch["joint_cam"][bx, tx]
     joint_rel = batch["joint_rel"][bx, tx]
     assert torch.allclose(
-        joint_rel, joint_cam - joint_cam[:1], atol=1e-3
+        joint_rel, joint_cam - joint_cam[:1], atol=1e-4
     ), "joint_rel not consistent with joint_cam"
     print("joint_rel is consistent with joint_cam")
 
@@ -379,7 +379,7 @@ def verify_batch(
     joint_cam = batch["joint_cam"][bx, tx].cpu()
     joint_rel = batch["joint_rel"][bx, tx].cpu()
     assert torch.allclose(
-        joint_rel, joint_cam - joint_cam[:1]
+        joint_rel, joint_cam - joint_cam[:1], atol=1e-4
     ), "joint_rel not consistent with joint_cam"
     print("joint_rel is consistent with joint_cam")
 

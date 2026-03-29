@@ -83,6 +83,32 @@ def test_assert_coco_wholebody_training_compat_rejects_norm_by_hand():
         assert_coco_wholebody_training_compat(cfg)
 
 
+def test_assert_coco_wholebody_training_compat_rejects_norm_by_hand_with_reweight_datasets():
+    cfg = OmegaConf.create(
+        {
+            "DATA": {
+                "train": {
+                    "source": [],
+                    "reweight": {
+                        "enabled": True,
+                        "datasets": [
+                            {
+                                "name": "COCO-WholeBody",
+                                "source": "/mnt/qnap/data/datasets/webdatasets2/COCO-WholeBody/train/*",
+                                "weight": 0.1,
+                            }
+                        ],
+                    },
+                }
+            },
+            "MODEL": {"norm_by_hand": True},
+        }
+    )
+
+    with pytest.raises(AssertionError, match="norm_by_hand=false"):
+        assert_coco_wholebody_training_compat(cfg)
+
+
 def test_compute_quick_metrics_excludes_coco_wholebody(tmp_path):
     results = {
         "joint_cam_pred": np.array(

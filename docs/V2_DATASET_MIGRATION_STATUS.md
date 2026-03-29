@@ -7,6 +7,7 @@
 已完成：
 - 当前项目主数据链路已切到 V2 runtime 语义。
 - Stage 1 / Stage 2 主配置已切到 `webdatasets2` 根目录。
+- `stage1/2-*_no_norm` 配置已扩展到当前 9 个训练数据集，并补上 dataset-level `reweight`。
 - 当前已使用的 4 个数据集已纳入迁移范围：
   - `InterHand2.6M`
   - `DexYCB/s1`
@@ -21,6 +22,7 @@
   - `masked loss -> masked mean`
   - `COCO-WholeBody` 专用 `2D patch auxiliary loss`
   - `val/test/evaluate` 显式排除 `COCO-WholeBody` 的 3D 指标统计
+- `COCO-WholeBody` 已可在 `no_norm` 的 Stage 1 / Stage 2 配置中作为 `2D-only` 数据混入训练
 
 未纳入本次范围：
 - `depth_bins`
@@ -112,6 +114,5 @@ V2 运行时现在显式区分：
 
 `COCO-WholeBody` 当前仍有未收口项：
 - `MODEL.norm_by_hand=true` 仍不支持
-- 训练集混合采样策略尚未加入
 - 还没有单独的 `COCO-WholeBody` 2D 指标统计
-- Stage 2 暂未考虑接入 `COCO-WholeBody`
+- 还没有 COCO 专用的 2D 可视化/评估闭环

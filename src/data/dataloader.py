@@ -4,6 +4,7 @@ Webdataset Dataloader
 from typing import *
 from functools import partial
 from dataclasses import dataclass
+from collections import OrderedDict
 import json
 import tarfile
 import numpy as np
@@ -321,13 +322,10 @@ def collate_fn(batch_wds):
     return collated
 
 
-def get_dataloader(
+def _build_clip_webdataset(
     url,
     num_frames: int,
     stride: int,
-    batch_size: int,
-    num_workers: int,
-    prefetcher_factor: int,
     infinite: bool = True,
     seed: Optional[int] = None,
     clip_sampling_mode: str = "dense",
@@ -336,16 +334,7 @@ def get_dataloader(
     post_clip_shuffle: int = 200,
     default_data_source: Optional[str] = None,
     default_source_split: str = "unknown",
-) -> wds.WebDataset:
-    """获得wds数据加载器
-
-    Args:
-        seed: 随机种子,用于固定shuffle顺序(主要用于验证集保证一致性)
-
-    Note:
-        对于验证集固定seed，使用整数seed而非Generator对象，
-        因为Generator对象不能被pickle序列化，会导致checkpoint保存失败。
-    """
+):
     dataset = (
         wds.WebDataset(
             url,
@@ -374,7 +363,84 @@ def get_dataloader(
     if post_clip_shuffle > 0:
         dataset = dataset.shuffle(post_clip_shuffle, initial=seed if seed is not None else 0)
 
-    dataset = dataset.map(preprocess_frame).batched(
+    return dataset.map(preprocess_frame)
+
+
+def compute_dataset_reweight_probs(
+    dataset_sources: Mapping[str, Sequence[str]],
+    dataset_weights: Mapping[str, float],
+) -> "OrderedDict[str, float]":
+    if len(dataset_sources) == 0:
+        raise ValueError("dataset_sources must not be empty")
+    if len(dataset_weights) == 0:
+        raise ValueError("dataset_weights must not be empty")
+
+    missing_weights = [name for name in dataset_sources.keys() if name not in dataset_weights]
+    if missing_weights:
+        raise ValueError(f"Missing reweight weights for datasets: {missing_weights}")
+
+    missing_sources = [name for name in dataset_weights.keys() if name not in dataset_sources]
+    if missing_sources:
+        raise ValueError(f"Missing dataset sources for weights: {missing_sources}")
+
+    empty_datasets = [name for name, urls in dataset_sources.items() if len(urls) == 0]
+    if empty_datasets:
+        raise ValueError(f"Empty dataset sources: {empty_datasets}")
+
+    total_weight = float(sum(float(weight) for weight in dataset_weights.values()))
+    if total_weight <= 0:
+        raise ValueError(f"dataset_weights sum must be positive, got {dict(dataset_weights)}")
+
+    normalized = OrderedDict()
+    for dataset_name in dataset_weights.keys():
+        weight = float(dataset_weights[dataset_name])
+        if weight <= 0:
+            raise ValueError(
+                f"dataset_weights[{dataset_name}] must be positive, got {weight}"
+            )
+        normalized[dataset_name] = weight / total_weight
+
+    return normalized
+
+
+def get_dataloader(
+    url,
+    num_frames: int,
+    stride: int,
+    batch_size: int,
+    num_workers: int,
+    prefetcher_factor: int,
+    infinite: bool = True,
+    seed: Optional[int] = None,
+    clip_sampling_mode: str = "dense",
+    clips_per_sequence: Optional[int] = None,
+    shardshuffle: Union[bool, int] = False,
+    post_clip_shuffle: int = 200,
+    default_data_source: Optional[str] = None,
+    default_source_split: str = "unknown",
+) -> wds.WebDataset:
+    """获得wds数据加载器
+
+    Args:
+        seed: 随机种子,用于固定shuffle顺序(主要用于验证集保证一致性)
+
+    Note:
+        对于验证集固定seed，使用整数seed而非Generator对象，
+        因为Generator对象不能被pickle序列化，会导致checkpoint保存失败。
+    """
+    dataset = _build_clip_webdataset(
+        url=url,
+        num_frames=num_frames,
+        stride=stride,
+        infinite=infinite,
+        seed=seed,
+        clip_sampling_mode=clip_sampling_mode,
+        clips_per_sequence=clips_per_sequence,
+        shardshuffle=shardshuffle,
+        post_clip_shuffle=post_clip_shuffle,
+        default_data_source=default_data_source,
+        default_source_split=default_source_split,
+    ).batched(
         batch_size,
         partial=False,
         collation_fn=collate_fn,
@@ -389,3 +455,57 @@ def get_dataloader(
     )
 
     return dataloader
+
+
+def get_dataset_reweight_dataloader(
+    dataset_sources: Mapping[str, Sequence[str]],
+    dataset_weights: Mapping[str, float],
+    num_frames: int,
+    stride: int,
+    batch_size: int,
+    num_workers: int,
+    prefetcher_factor: int,
+    infinite: bool = True,
+    seed: Optional[int] = None,
+    clip_sampling_mode: str = "dense",
+    clips_per_sequence: Optional[int] = None,
+    shardshuffle: Union[bool, int] = False,
+    post_clip_shuffle: int = 200,
+    default_source_split: str = "unknown",
+):
+    normalized_weights = compute_dataset_reweight_probs(
+        dataset_sources=dataset_sources,
+        dataset_weights=dataset_weights,
+    )
+
+    datasets = []
+    probs = []
+    for idx, dataset_name in enumerate(normalized_weights.keys()):
+        dataset_seed = None if seed is None else seed + idx * 100003
+        datasets.append(
+            _build_clip_webdataset(
+                url=list(dataset_sources[dataset_name]),
+                num_frames=num_frames,
+                stride=stride,
+                infinite=infinite,
+                seed=dataset_seed,
+                clip_sampling_mode=clip_sampling_mode,
+                clips_per_sequence=clips_per_sequence,
+                shardshuffle=shardshuffle,
+                post_clip_shuffle=post_clip_shuffle,
+                default_data_source=dataset_name,
+                default_source_split=default_source_split,
+            )
+        )
+        probs.append(float(normalized_weights[dataset_name]))
+
+    mixed_dataset = wds.RandomMix(datasets, probs=probs, longest=not infinite)
+
+    return DataLoader(
+        mixed_dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        prefetch_factor=prefetcher_factor if num_workers > 0 else None,
+        collate_fn=collate_fn,
+        pin_memory=False,
+    )

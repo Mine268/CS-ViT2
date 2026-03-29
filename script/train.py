@@ -4,11 +4,12 @@ import os.path as osp
 import shutil
 import glob
 import logging
+from collections import OrderedDict
 from rich.logging import RichHandler
 import datetime
 import json
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
 
 import torch
@@ -24,6 +25,8 @@ from src.data.dataloader import get_dataloader
 from src.data.dataloader import (
     estimate_wds_shard_clip_counts,
     build_balanced_clip_segments,
+    compute_dataset_reweight_probs,
+    get_dataset_reweight_dataloader,
     get_segmented_wds_dataloader,
 )
 from src.data.depth_bin_dataloader import (
@@ -48,12 +51,123 @@ def _has_coco_wholebody_source(source_list: Sequence[str]) -> bool:
     return any("COCO-WholeBody" in str(source) for source in source_list)
 
 
+def _normalize_source_patterns(source_value: Any) -> List[str]:
+    if isinstance(source_value, (list, tuple, ListConfig)):
+        return [str(item) for item in source_value]
+    return [str(source_value)]
+
+
+def get_effective_train_source_patterns(cfg: DictConfig) -> List[str]:
+    source_patterns = [str(source) for source in cfg.DATA.train.get("source", [])]
+    train_reweight_cfg = cfg.DATA.train.get("reweight", {})
+    for entry in train_reweight_cfg.get("datasets", []):
+        source_patterns.extend(_normalize_source_patterns(entry.get("source", [])))
+    return source_patterns
+
+
 def assert_coco_wholebody_training_compat(cfg: DictConfig):
-    train_sources = cfg.DATA.train.get("source", [])
+    train_sources = get_effective_train_source_patterns(cfg)
     if _has_coco_wholebody_source(train_sources) and cfg.MODEL.get("norm_by_hand", False):
         raise AssertionError(
             "COCO-WholeBody training currently requires MODEL.norm_by_hand=false."
         )
+
+
+def collect_reweight_dataset_sources(
+    source_patterns: Sequence[str],
+    dataset_names: Sequence[str],
+) -> "OrderedDict[str, List[str]]":
+    if len(dataset_names) == 0:
+        raise ValueError("reweight.enabled=true requires a non-empty weights mapping")
+
+    dataset_sources: "OrderedDict[str, List[str]]" = OrderedDict(
+        (str(dataset_name), []) for dataset_name in dataset_names
+    )
+    unmatched_patterns: List[str] = []
+    ambiguous_patterns: List[str] = []
+
+    for source_pattern in source_patterns:
+        pattern_str = str(source_pattern)
+        matched_names = [
+            dataset_name for dataset_name in dataset_sources.keys()
+            if dataset_name in pattern_str
+        ]
+        if len(matched_names) == 0:
+            unmatched_patterns.append(pattern_str)
+            continue
+        if len(matched_names) > 1:
+            ambiguous_patterns.append(pattern_str)
+            continue
+
+        matched_files = sorted(glob.glob(pattern_str))
+        if len(matched_files) == 0:
+            raise ValueError(f"reweight source pattern matched no files: {pattern_str}")
+
+        dataset_sources[matched_names[0]].extend(matched_files)
+
+    if ambiguous_patterns:
+        raise ValueError(f"Ambiguous reweight source patterns: {ambiguous_patterns}")
+    if unmatched_patterns:
+        raise ValueError(
+            "Found source patterns that do not map to any reweight dataset: "
+            f"{unmatched_patterns}"
+        )
+
+    empty_datasets = [name for name, urls in dataset_sources.items() if len(urls) == 0]
+    if empty_datasets:
+        raise ValueError(
+            "Missing train sources for reweight datasets: "
+            f"{empty_datasets}"
+        )
+
+    return dataset_sources
+
+
+def collect_reweight_dataset_config(
+    source_patterns: Sequence[str],
+    reweight_cfg: DictConfig,
+) -> Tuple["OrderedDict[str, List[str]]", "OrderedDict[str, float]"]:
+    dataset_entries = reweight_cfg.get("datasets", [])
+    if len(dataset_entries) > 0:
+        dataset_sources: "OrderedDict[str, List[str]]" = OrderedDict()
+        dataset_weights: "OrderedDict[str, float]" = OrderedDict()
+
+        for entry in dataset_entries:
+            dataset_name = str(entry.get("name", "")).strip()
+            if dataset_name == "":
+                raise ValueError("Each reweight dataset entry must provide a non-empty name")
+            if dataset_name in dataset_sources:
+                raise ValueError(f"Duplicate reweight dataset entry: {dataset_name}")
+
+            patterns = _normalize_source_patterns(entry.get("source", []))
+            if len(patterns) == 0:
+                raise ValueError(
+                    f"Reweight dataset entry {dataset_name} must provide a non-empty source"
+                )
+
+            matched_files: List[str] = []
+            for pattern_str in patterns:
+                files = sorted(glob.glob(pattern_str))
+                if len(files) == 0:
+                    raise ValueError(
+                        f"reweight dataset {dataset_name} pattern matched no files: {pattern_str}"
+                    )
+                matched_files.extend(files)
+
+            dataset_sources[dataset_name] = matched_files
+            dataset_weights[dataset_name] = float(entry.get("weight", 0.0))
+
+        return dataset_sources, dataset_weights
+
+    dataset_weights = OrderedDict(
+        (str(name), float(weight))
+        for name, weight in reweight_cfg.get("weights", {}).items()
+    )
+    dataset_sources = collect_reweight_dataset_sources(
+        source_patterns=source_patterns,
+        dataset_names=list(dataset_weights.keys()),
+    )
+    return dataset_sources, dataset_weights
 
 
 def save_best_model_variant(
@@ -142,6 +256,13 @@ def manage_checkpoints(output_dir, keep_last_n=3):
 def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None):
     train_sampling_cfg = cfg.DATA.train.get("sampling", {})
     train_depth_bin_cfg = cfg.DATA.train.get("depth_bins", {})
+    train_reweight_cfg = cfg.DATA.train.get("reweight", {})
+
+    if train_depth_bin_cfg.get("enabled", False) and train_reweight_cfg.get("enabled", False):
+        raise ValueError(
+            "DATA.train.depth_bins.enabled and DATA.train.reweight.enabled "
+            "cannot both be true"
+        )
 
     if train_depth_bin_cfg.get("enabled", False):
         dataset_names = train_depth_bin_cfg.get("dataset_names", [])
@@ -216,6 +337,44 @@ def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None)
                 f"setup depth-bin train loader: root={train_depth_bin_cfg['root']} "
                 f"datasets={dataset_names} bins={list(bin_sources.keys())}"
             )
+    elif train_reweight_cfg.get("enabled", False):
+        dataset_sources, dataset_weights = collect_reweight_dataset_config(
+            source_patterns=cfg.DATA.train.source,
+            reweight_cfg=train_reweight_cfg,
+        )
+        normalized_weights = compute_dataset_reweight_probs(
+            dataset_sources=dataset_sources,
+            dataset_weights=dataset_weights,
+        )
+        train_loader = get_dataset_reweight_dataloader(
+            dataset_sources=dataset_sources,
+            dataset_weights=dataset_weights,
+            num_frames=cfg.MODEL.num_frame,
+            stride=cfg.DATA.train.stride,
+            batch_size=cfg.TRAIN.sample_per_device,
+            num_workers=cfg.GENERAL.num_worker,
+            prefetcher_factor=cfg.GENERAL.prefetch_factor,
+            infinite=True,
+            seed=cfg.GENERAL.get("seed", None),
+            clip_sampling_mode=train_sampling_cfg.get("mode", "dense"),
+            clips_per_sequence=train_sampling_cfg.get("clips_per_sequence", None),
+            shardshuffle=train_reweight_cfg.get(
+                "shardshuffle",
+                train_sampling_cfg.get("shardshuffle", False),
+            ),
+            post_clip_shuffle=train_reweight_cfg.get(
+                "post_clip_shuffle",
+                train_sampling_cfg.get("post_clip_shuffle", 200),
+            ),
+            default_source_split=train_reweight_cfg.get("split", "train"),
+        )
+        logger.info(
+            "setup reweight train loader: datasets=%s weights=%s num_frames=%s stride=%s",
+            {name: len(urls) for name, urls in dataset_sources.items()},
+            dict(normalized_weights),
+            cfg.MODEL.num_frame,
+            cfg.DATA.train.stride,
+        )
     else:
         train_sources = []
         for src in cfg.DATA.train.source:

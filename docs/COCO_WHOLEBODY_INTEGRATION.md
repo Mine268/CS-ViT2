@@ -1,6 +1,6 @@
 # COCO-WholeBody 接入说明
 
-本文件概括当前项目将 `COCO-WholeBody` 接入 Stage 1 训练链路时的约束、loss 设计和验证口径。
+本文件概括当前项目将 `COCO-WholeBody` 接入 Stage 1 / Stage 2 训练链路时的约束、loss 设计和验证口径。
 
 ## 当前实现
 
@@ -12,9 +12,11 @@
 当前默认配置状态：
 
 - [stage1-dino_large_no_norm.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-dino_large_no_norm.yaml) 已默认加入 `COCO-WholeBody`
+- [stage1-swinv2_large_no_norm.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-swinv2_large_no_norm.yaml) 已默认加入 `COCO-WholeBody`
+- [stage2-dino_large_no_norm.yaml](/data_1/renkaiwen/CS-ViT2/config/stage2-dino_large_no_norm.yaml) 已默认加入 `COCO-WholeBody`
 - [stage1-dino_large.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-dino_large.yaml) 未默认加入，因为 `MODEL.norm_by_hand=true`
 - [stage1-swinv2_large.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-swinv2_large.yaml) 未默认加入，因为 `MODEL.norm_by_hand=true`
-- `stage2*` 配置未默认加入，因为当前 `COCO-WholeBody` 仍只按 `Stage 1` 的 `2D-only` 数据使用
+- 当前 `no_norm` 配置默认通过 `DATA.train.reweight` 控制 `COCO-WholeBody` 的混采比例
 
 ## Loss 设计
 
@@ -34,7 +36,7 @@
 注意：
 
 - 当前版本没有为 `COCO-WholeBody` 单独启用 RobustL1。
-- 当前版本没有引入额外的混合采样比率控制。
+- 当前版本已引入 dataset-level `reweight` 配置，用于控制 `COCO-WholeBody` 的混采比例。
 
 ## masked mean 收口
 
@@ -83,6 +85,5 @@
 
 ## 当前未做
 
-- 没有加入 `COCO-WholeBody` 的采样配比控制
 - 没有为 COCO 单独设计 2D 可视化指标
-- 没有扩展到 Stage 2 训练
+- 没有为 COCO 单独设计 2D-only 的评估指标

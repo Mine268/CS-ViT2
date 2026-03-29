@@ -24,8 +24,8 @@ GENERAL:
   warmup_step: 5000
   dropout_warmup_step: 10000  # Dropout渐进式预热步数
   cosine_cycle: 0.4
-  num_worker: 4
-  prefetch_factor: 1
+  num_worker: 8
+  prefetch_factor: 2
   seed: 3229084
   val_seed: 42  # 验证集固定seed，确保每次验证使用相同数据
   resume_path: null
@@ -59,19 +59,51 @@ DATA:
   train:
     source: [
       /mnt/qnap/data/datasets/webdatasets2/AssemblyHands/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/COCO-WholeBody/train/*,
       /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/FreiHAND/train/*,
       /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*,
       /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/COCO-WholeBody/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/train/*,
       /mnt/qnap/data/datasets/webdatasets2/MTC/train/*,
       /mnt/qnap/data/datasets/webdatasets2/RHD/train/*,
     ]
-    # COCO-WholeBody 当前未默认加入 Stage 2：
-    # 1. Stage 2 使用 MODEL.num_frame=7，COCO-WholeBody 目前不作为时序数据训练
-    # 2. 当前 COCO 2D patch auxiliary loss 只针对 Stage 1 路径设计
     stride: 1
+    reweight:
+      enabled: true
+      split: train
+      datasets:
+        - name: AssemblyHands
+          source: /mnt/qnap/data/datasets/webdatasets2/AssemblyHands/train/*
+          weight: 0.10
+        - name: COCO-WholeBody
+          source: /mnt/qnap/data/datasets/webdatasets2/COCO-WholeBody/train/*
+          weight: 0.10
+        - name: DexYCB
+          source: /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/train/*
+          weight: 0.10
+        - name: FreiHAND
+          source: /mnt/qnap/data/datasets/webdatasets2/FreiHAND/train/*
+          weight: 0.15
+        - name: HO3D_v3
+          source: /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*
+          weight: 0.10
+        - name: HOT3D
+          source: /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*
+          weight: 0.10
+        - name: InterHand2.6M
+          source: /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/train/*
+          weight: 0.20
+        - name: MTC
+          source: /mnt/qnap/data/datasets/webdatasets2/MTC/train/*
+          weight: 0.15
+        - name: RHD
+          source: /mnt/qnap/data/datasets/webdatasets2/RHD/train/*
+          weight: 0.10
+      shardshuffle: 128
+      post_clip_shuffle: 1024
     depth_bins:
+      # 当前 9 数据集混训默认走 reweight；depth_bins 仍只保留给旧的 4 数据集实验。
       enabled: false
       root: /mnt/qnap/data/datasets/webdatasets/depth-bins
       dataset_names: [InterHand2.6M, DexYCB_s1, HO3D_v3, HOT3D]
@@ -86,8 +118,8 @@ DATA:
     sampling:
       mode: random_clip
       clips_per_sequence: 1
-      shardshuffle: 32
-      post_clip_shuffle: 256
+      shardshuffle: 128
+      post_clip_shuffle: 1024
   val:
     source: [
       /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/val/*,
@@ -152,6 +184,7 @@ LOSS:
   lambda_trans: 0.001      # 降低根关节loss权重 (0.05 → 0.001)，因为无归一化时 trans 值更大（mm单位）
   lambda_rel: 0.012        # 降低相对关节loss权重 (0.015 → 0.012)
   lambda_img: 0.002
+  lambda_coco_patch_2d: 0.0005
   supervise_global: true
   supervise_heatmap: true
   heatmap_sigma: 2.0       # 调整heatmap_sigma (0.09 → 0.006)，适应无归一化的原始尺度
