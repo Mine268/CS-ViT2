@@ -9,6 +9,13 @@
 - 该 loss 只对 `data_source == "COCO-WholeBody"` 的样本生效。
 - 现有 `3D / MANO / reprojection` loss 继续只由可用的 3D / MANO 标注驱动。
 
+当前默认配置状态：
+
+- [stage1-dino_large_no_norm.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-dino_large_no_norm.yaml) 已默认加入 `COCO-WholeBody`
+- [stage1-dino_large.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-dino_large.yaml) 未默认加入，因为 `MODEL.norm_by_hand=true`
+- [stage1-swinv2_large.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-swinv2_large.yaml) 未默认加入，因为 `MODEL.norm_by_hand=true`
+- `stage2*` 配置未默认加入，因为当前 `COCO-WholeBody` 仍只按 `Stage 1` 的 `2D-only` 数据使用
+
 ## Loss 设计
 
 - 新增配置项：`LOSS.lambda_coco_patch_2d`

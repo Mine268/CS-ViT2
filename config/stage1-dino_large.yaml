@@ -63,6 +63,7 @@ DATA:
       /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*,
       /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*
     ]
+    # COCO-WholeBody 当前未默认加入本配置，因为 MODEL.norm_by_hand=true 时会触发训练期断言。
     stride: 1
     depth_bins:
       enabled: false

@@ -61,7 +61,8 @@ DATA:
       /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/train/*,
       /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/train/*,
       /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*
+      /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/COCO-WholeBody/train/*
     ]
     stride: 1
     depth_bins:
@@ -110,7 +111,7 @@ MODEL:
   stage1_weight: null
   num_frame: 1
   joint_type: "3"
-  norm_by_hand: true
+  norm_by_hand: false
   backbone:
     backbone_str: model/microsoft/swinv2-large-patch4-window12-192-22k
     infusion_layer: null

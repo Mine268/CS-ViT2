@@ -23,6 +23,12 @@
   - `norm_by_hand=false` 的当前限制
   - 为什么 `val/test/evaluate` 要显式排除 COCO 参与 3D 指标
 
+- **[DATASET_DEPTH_BALANCE_AND_COCO_PLAN.md](DATASET_DEPTH_BALANCE_AND_COCO_PLAN.md)** - 当前数据集深度分布与 COCO 训练方案
+  - 当前 4 个 3D 数据集的全量 `dataset x depth-bin` 统计
+  - `dataset_bin_balanced` 的候选超参与过采样倍率对比
+  - 推荐的 `min_cell_samples / alpha` 设置
+  - COCO-WholeBody 的采样比例与 loss 设计建议
+
 - **[CHECKPOINT_TEST_WORKFLOW.md](CHECKPOINT_TEST_WORKFLOW.md)** - 指定 checkpoint 在指定数据集上的单卡测试流程
   - 如何用 `script.test` 运行单卡测试
   - 如何用 `script.evaluate` 计算完整指标
@@ -183,6 +189,7 @@
 **最后更新**: 2026-03-22
 
 **重要更新**:
+- 2026-03-22: 增加当前数据集深度分布与 COCO 训练方案文档，明确 `dataset × depth-bin` 和 COCO 采样/loss 的推荐设置
 - 2026-03-22: 增加 `swinv2-large-patch4-window12-192-22k` backbone 兼容代码和 `stage1-swinv2_large.yaml`
 - 2026-03-22: 增加 `COCO-WholeBody` 专用 2D patch auxiliary loss，并在 val/test/evaluate 中显式排除 COCO 的 3D 指标统计
 - 2026-03-22: 完成四个已用数据集到 `webdatasets2` 的 V2 迁移，并补充 temp/ 验证产物与状态文档

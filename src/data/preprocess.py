@@ -8,6 +8,8 @@ import kornia.augmentation as KA
 from ..utils.rot import *
 from ..constant import *
 
+MIN_PATCH_EDGE_PIXELS = 1.0
+
 
 class PixelLevelAugmentation(torch.nn.Module):
     """
@@ -376,6 +378,32 @@ def _compute_resized_patch_joints(
     return joint_patch_resized
 
 
+def _compute_square_patch_bbox(
+    hand_bbox: torch.Tensor,
+    patch_expanstion: float,
+    min_edge_pixels: float = MIN_PATCH_EDGE_PIXELS,
+) -> torch.Tensor:
+    """
+    根据 hand bbox 构造正方形 patch bbox，并保证边长不会退化到 0。
+    """
+    bbox_size = torch.clamp(hand_bbox[..., 2:] - hand_bbox[..., :2], min=0.0)
+    bbox_edge_len = torch.clamp(
+        torch.max(bbox_size, dim=-1).values,
+        min=min_edge_pixels,
+    )
+    center = (hand_bbox[..., :2] + hand_bbox[..., 2:]) * 0.5
+    half_edge_len = bbox_edge_len * 0.5 * patch_expanstion
+    return torch.cat(
+        [
+            center[..., 0:1] - half_edge_len[..., None],
+            center[..., 1:2] - half_edge_len[..., None],
+            center[..., 0:1] + half_edge_len[..., None],
+            center[..., 1:2] + half_edge_len[..., None],
+        ],
+        dim=-1,
+    )
+
+
 @torch.no_grad()
 def preprocess_batch(
     batch_origin,
@@ -461,32 +489,30 @@ def preprocess_batch(
     has_intr_mask = has_intr > 0.5
 
     if not augmentation_flag and not perspective_normalization:
-        hand_bbox_center = (hand_bbox[..., :2] + hand_bbox[..., 2:]) * 0.5
-        width, height = torch.split(hand_bbox[..., 2:] - hand_bbox[..., :2], 1, dim=-1)
-        half_edge_len = torch.max(width, height) * patch_expanstion * 0.5
+        patch_bbox = _compute_square_patch_bbox(
+            hand_bbox,
+            patch_expanstion=patch_expanstion,
+        )
         patch_bbox_corners = torch.stack(
             [
-                hand_bbox_center - half_edge_len,
+                patch_bbox[..., :2],
                 torch.stack(
                     [
-                        hand_bbox_center[..., 0] + half_edge_len[..., 0],
-                        hand_bbox_center[..., 1] - half_edge_len[..., 0],
+                        patch_bbox[..., 2],
+                        patch_bbox[..., 1],
                     ],
                     dim=-1,
                 ),
-                hand_bbox_center + half_edge_len,
+                patch_bbox[..., 2:],
                 torch.stack(
                     [
-                        hand_bbox_center[..., 0] - half_edge_len[..., 0],
-                        hand_bbox_center[..., 1] + half_edge_len[..., 0],
+                        patch_bbox[..., 0],
+                        patch_bbox[..., 3],
                     ],
                     dim=-1,
                 ),
                 ],
             dim=2,
-        )
-        patch_bbox: torch.Tensor = torch.cat(
-            [patch_bbox_corners[:, :, 0], patch_bbox_corners[:, :, 2]], dim=-1
         )
         patches = []
         for bx, img_orig_tensor in enumerate(batch_origin["imgs"]):
@@ -648,24 +674,17 @@ def preprocess_batch(
         no_valid_joint = valid_joint_count == 0
         hand_bbox = torch.where(no_valid_joint.expand_as(hand_bbox), hand_bbox, hand_bbox_new)
 
-        center = (hand_bbox[..., :2] + hand_bbox[..., 2:]) * 0.5
-        half_edge_len = (
-            torch.max(hand_bbox[..., 2:] - hand_bbox[..., :2], dim=-1).values
-            * 0.5
-            * patch_expanstion
-        )
-        patch_bbox = torch.cat(
-            [
-                center[..., 0:1] - half_edge_len[..., None],
-                center[..., 1:2] - half_edge_len[..., None],
-                center[..., 0:1] + half_edge_len[..., None],
-                center[..., 1:2] + half_edge_len[..., None],
-            ],
-            dim=-1,
+        patch_bbox = _compute_square_patch_bbox(
+            hand_bbox,
+            patch_expanstion=patch_expanstion,
         )
 
-        sx = (patch_bbox[..., 2] - patch_bbox[..., 0]) / patch_size[1]
-        sy = (patch_bbox[..., 3] - patch_bbox[..., 1]) / patch_size[0]
+        patch_bbox_size = torch.clamp(
+            patch_bbox[..., 2:] - patch_bbox[..., :2],
+            min=MIN_PATCH_EDGE_PIXELS,
+        )
+        sx = patch_bbox_size[..., 0] / patch_size[1]
+        sy = patch_bbox_size[..., 1] / patch_size[0]
         a_inv = torch.zeros(batch_size, num_frames, 3, 3, device=device, dtype=torch.float32)
         a_inv[..., 0, 0] = 1.0 / sx
         a_inv[..., 1, 1] = 1.0 / sy

@@ -63,6 +63,10 @@ DATA:
       /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*,
       /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*
     ]
+    # COCO-WholeBody 当前未默认加入 Stage 2：
+    # 1. 当前 Stage 2 配置使用 MODEL.num_frame=7
+    # 2. COCO-WholeBody 目前只按 Stage 1 的 2D-only 数据使用
+    # 3. 本配置仍为 norm_by_hand=true
     stride: 1
     depth_bins:
       enabled: false

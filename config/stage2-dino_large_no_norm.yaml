@@ -58,11 +58,18 @@ TRAIN:
 DATA:
   train:
     source: [
-      /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/train/*,
-      /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/train/*,
-      /mnt/qnap/data/datasets/webdatasets/HO3D_v3/train/*,
-      /mnt/qnap/data/datasets/webdatasets/HOT3D/train/*
+      /mnt/qnap/data/datasets/webdatasets2/AssemblyHands/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/COCO-WholeBody/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/MTC/train/*,
+      /mnt/qnap/data/datasets/webdatasets2/RHD/train/*,
     ]
+    # COCO-WholeBody 当前未默认加入 Stage 2：
+    # 1. Stage 2 使用 MODEL.num_frame=7，COCO-WholeBody 目前不作为时序数据训练
+    # 2. 当前 COCO 2D patch auxiliary loss 只针对 Stage 1 路径设计
     stride: 1
     depth_bins:
       enabled: false
@@ -83,8 +90,8 @@ DATA:
       post_clip_shuffle: 256
   val:
     source: [
-      /mnt/qnap/data/datasets/webdatasets/InterHand2.6M/val/*,
-      /mnt/qnap/data/datasets/webdatasets/DexYCB/s1/val/*,
+      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/val/*,
+      /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/val/*,
     ]
     stride: 1
     full_eval: false

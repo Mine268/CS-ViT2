@@ -1,0 +1,30 @@
+{
+  "raw_train_sampling_weights": {
+    "AssemblyHands": 0.1,
+    "COCO-WholeBody": 0.1,
+    "DexYCB": 0.1,
+    "FreiHAND": 0.15,
+    "HO3D_v3": 0.1,
+    "HOT3D": 0.1,
+    "InterHand2.6M": 0.2,
+    "MTC": 0.15,
+    "RHD": 0.1
+  },
+  "effective_3d_weights": {
+    "AssemblyHands": 0.1,
+    "DexYCB": 0.1,
+    "FreiHAND": 0.15,
+    "HO3D_v3": 0.1,
+    "HOT3D": 0.1,
+    "InterHand2.6M": 0.2,
+    "MTC": 0.15,
+    "RHD": 0.1
+  },
+  "skipped_weights": {
+    "COCO-WholeBody": {
+      "weight": 0.1,
+      "reason": "no_valid_3d_root",
+      "rel_split_dir": "COCO-WholeBody/train"
+    }
+  }
+}
