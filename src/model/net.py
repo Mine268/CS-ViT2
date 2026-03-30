@@ -73,10 +73,23 @@ class PoseNet(nn.Module):
 
         freeze_backbone: bool,
         norm_by_hand: bool,
+        handec_cam_head_type: str = "softargmax3d",
+        root_z_num_bins: int = 8,
+        root_z_d_min: float = -0.73,
+        root_z_d_max: float = 0.74,
+        root_z_prior_k: float = 121.0,
+        root_z_geom_hidden_dim: int = 256,
+        root_z_dropout: float = 0.0,
+        root_z_use_data_source_embed: bool = False,
+        lambda_root_z_cls: float = 1.0,
+        lambda_root_z_res: float = 1.0,
     ):
         super(PoseNet, self).__init__()
 
         self.stage = PoseNet.Stage(stage)
+        self.cam_head_type = handec_cam_head_type
+        if self.cam_head_type == "xy_rootz_multibin" and norm_by_hand:
+            raise NotImplementedError("xy_rootz_multibin only supports norm_by_hand=false")
 
         # Image encoder
         backbone_kwargs = default(backbone_kwargs, {})
@@ -145,6 +158,14 @@ class PoseNet(nn.Module):
             denorm_output=handec_denorm_output,
             norm_by_hand=norm_by_hand,
             heatmap_resolution=handec_heatmap_resulotion,
+            cam_head_type=handec_cam_head_type,
+            root_z_num_bins=root_z_num_bins,
+            root_z_d_min=root_z_d_min,
+            root_z_d_max=root_z_d_max,
+            root_z_prior_k=root_z_prior_k,
+            root_z_geom_hidden_dim=root_z_geom_hidden_dim,
+            root_z_dropout=root_z_dropout,
+            root_z_use_data_source_embed=root_z_use_data_source_embed,
         )
 
         self.norm_by_hand = norm_by_hand
@@ -173,12 +194,18 @@ class PoseNet(nn.Module):
             lambda_rel=lambda_rel,
             lambda_img=lambda_img,
             lambda_coco_patch_2d=lambda_coco_patch_2d,
+            lambda_root_z_cls=lambda_root_z_cls,
+            lambda_root_z_res=lambda_root_z_res,
             supervise_global=True,
             supervise_heatmap=supervise_heatmap,
             norm_by_hand=norm_by_hand,
             norm_idx=self.norm_idx if norm_by_hand else [],
             hm_centers=None if not supervise_heatmap else self.handec.get_centers(),
             hm_sigma=hm_sigma,
+            cam_head_type=handec_cam_head_type,
+            root_z_num_bins=root_z_num_bins,
+            root_z_d_min=root_z_d_min,
+            root_z_d_max=root_z_d_max,
             reproj_loss_type=reproj_loss_type,
             reproj_loss_delta=reproj_loss_delta,
         )
@@ -278,7 +305,22 @@ class PoseNet(nn.Module):
         bbox: torch.Tensor,
         focal: torch.Tensor,
         princpt: torch.Tensor,
+        hand_bbox: Optional[torch.Tensor] = None,
     ):
+        """
+        Args:
+            img: 裁手后的 patch 图像
+            bbox: patch 在原图坐标系下对应的 crop 框（即 patch_bbox）
+                该参数保持旧语义，继续供 Perspective Information Embedder 使用，
+                以保证 softargmax3d 老路径和已有配置/权重的行为不变。
+            focal, princpt: 与当前 patch 对应的相机内参
+            hand_bbox: 手本身在原图坐标系下的 bbox（即 hand_bbox）
+                新的 root-z head 需要显式区分 hand_bbox 和 patch_bbox：
+                - patch_bbox 反映的是工程上的 crop 区域
+                - hand_bbox 更接近真实手部表观尺度
+                root-z prior / dw / dh / dx / dy 应基于 hand_bbox 计算，
+                避免被 square crop / expansion 等裁剪策略污染。
+        """
         # extract vision feature
         feats = self.backbone(img) # [b,l,d]
         if self.drop_cls:
@@ -295,13 +337,20 @@ class PoseNet(nn.Module):
         # extract hand param
         # [b,d], [b,10], [b,3]
         # [b,n], hm_x, hm_y, hm_z
-        (pred_hand_pose, pred_shape, pred_trans), pred_log_heatmaps, pred_tokens = (
-            self.handec(feats)
+        (pred_hand_pose, pred_shape, pred_trans), pred_cam_aux, pred_tokens = (
+            self.handec(
+                feats,
+                # 新路径优先使用 hand_bbox；若调用方未提供，则退回到旧 bbox，
+                # 保证接口兼容，但语义上推荐显式传 hand_bbox。
+                hand_bbox=hand_bbox if hand_bbox is not None else bbox,
+                focal=focal,
+                princpt=princpt,
+            )
         )
-        if self.supervise_heatmap:
+        if self.supervise_heatmap and self.cam_head_type == "softargmax3d":
             pred_trans.detach()
 
-        return (pred_hand_pose, pred_shape, pred_trans), pred_log_heatmaps, pred_tokens
+        return (pred_hand_pose, pred_shape, pred_trans), pred_cam_aux, pred_tokens
 
     def predict_mano_param(
         self,
@@ -309,7 +358,8 @@ class PoseNet(nn.Module):
         bbox: torch.Tensor,
         focal: torch.Tensor,
         princpt: torch.Tensor,
-        timestamp: Optional[torch.Tensor] = None
+        timestamp: Optional[torch.Tensor] = None,
+        hand_bbox: Optional[torch.Tensor] = None,
     ):
         """
         timestamp: None or [b,t]
@@ -319,6 +369,12 @@ class PoseNet(nn.Module):
             and len(focal.shape) == 3
             and len(princpt.shape) == 3
         )
+        if hand_bbox is None:
+            # 对旧调用方保持兼容：若未显式提供 hand_bbox，则暂时退回 bbox。
+            # 这里的 bbox 实际上是 patch_bbox，新的 root-z head 若要获得最稳
+            # 的几何先验，调用方应显式传入 batch["hand_bbox"]。
+            hand_bbox = bbox
+        assert len(hand_bbox.shape) == 3
 
         num_frame = img.shape[1]
 
@@ -327,17 +383,18 @@ class PoseNet(nn.Module):
             self.img_std[None, None, :, None, None]
         )
 
-        img, bbox, focal, princpt = map(
+        img, bbox, focal, princpt, hand_bbox = map(
             lambda t: eps.rearrange(t, "b t ... -> (b t) ..."),
-            [img, bbox, focal, princpt]
+            [img, bbox, focal, princpt, hand_bbox]
         )
 
         if self.stage == PoseNet.Stage.STAGE1:
-            (pose, shape, trans), log_heatmaps, _ = self.decode_hand_param(
+            (pose, shape, trans), cam_aux, _ = self.decode_hand_param(
                 img=img,
                 bbox=bbox,
                 focal=focal,
                 princpt=princpt,
+                hand_bbox=hand_bbox,
             )
         elif self.stage == PoseNet.Stage.STAGE2:
             _, _, tokens_out = self.decode_hand_param( # repeat for readibility
@@ -345,13 +402,17 @@ class PoseNet(nn.Module):
                 bbox=bbox,
                 focal=focal,
                 princpt=princpt,
+                hand_bbox=hand_bbox,
             ) # [(b*t),d]
             # [b,t,d]
             tokens_out = eps.rearrange(tokens_out, "(b t) d -> b t d", t=num_frame)
             tokens_out = self.temporal_refiner(tokens_out, timestamp)
 
-            (pose, shape, trans), log_heatmaps = self.handec.decode_token(
-                eps.rearrange(tokens_out, "b t d -> (b t) d")
+            (pose, shape, trans), cam_aux = self.handec.decode_token(
+                eps.rearrange(tokens_out, "b t d -> (b t) d"),
+                hand_bbox=hand_bbox,
+                focal=focal,
+                princpt=princpt,
             )
 
         # reshape: Stage 1 输出 [b,1,d], Stage 2 输出 [b,t,d]
@@ -360,14 +421,16 @@ class PoseNet(nn.Module):
             lambda t: eps.rearrange(t, "(b t) d -> b t d", t=out_frames),
             [pose, shape, trans]
         )
-        log_heatmaps = tuple(
-            map(
-                lambda t: eps.rearrange(t, "(b t) d -> b t d", t=out_frames),
-                log_heatmaps,
+        cam_aux = {
+            key: (
+                eps.rearrange(value, "(b t) ... -> b t ...", t=out_frames)
+                if torch.is_tensor(value)
+                else value
             )
-        )
+            for key, value in cam_aux.items()
+        }
 
-        return pose, shape, trans, log_heatmaps
+        return pose, shape, trans, cam_aux
 
     def mano_to_pose(self, pose, shape):
         batch_size, _, _ = pose.shape
@@ -426,6 +489,7 @@ class PoseNet(nn.Module):
         focal: torch.Tensor,
         princpt: torch.Tensor,
         timestamp: Optional[torch.Tensor] = None,
+        hand_bbox: Optional[torch.Tensor] = None,
         joint_cam_gt: Optional[torch.Tensor] = None,
         joint_3d_valid_gt: Optional[torch.Tensor] = None,
     ):
@@ -459,7 +523,12 @@ class PoseNet(nn.Module):
         """
         # 1. 获取原始 MANO 参数（复用 predict_mano_param）
         pose_pred, shape_pred, trans_pred, _ = self.predict_mano_param(
-            img=img, bbox=bbox, focal=focal, princpt=princpt, timestamp=timestamp
+            img=img,
+            bbox=bbox,
+            focal=focal,
+            princpt=princpt,
+            timestamp=timestamp,
+            hand_bbox=hand_bbox,
         )
 
         # 2. FK — 推理只取最后一帧
@@ -517,17 +586,18 @@ class PoseNet(nn.Module):
 
     def forward(self, batch):
         # 1. forward
-        pose_pred, shape_pred, trans_pred, log_hm_pred = self.predict_mano_param(
+        pose_pred, shape_pred, trans_pred, cam_aux = self.predict_mano_param(
             img=batch["patches"],
             bbox=batch["patch_bbox"],
             focal=batch["focal"],
             princpt=batch["princpt"],
-            timestamp=batch["timestamp"]
+            timestamp=batch["timestamp"],
+            hand_bbox=batch.get("hand_bbox", batch["patch_bbox"]),
         )
 
         # 2. loss, fk
         loss, loss_state, result = self.loss_fn(
-            pose_pred, shape_pred, trans_pred, log_hm_pred, batch
+            pose_pred, shape_pred, trans_pred, cam_aux, batch
         )
 
         # 3. micro metric

@@ -35,6 +35,12 @@
   - 当前三份 `no_norm` 配置的默认权重
   - `COCO-WholeBody` 在 reweight 下的注意事项
 
+- **[ROOT_Z_PRIOR_MULTIBIN_DESIGN.md](ROOT_Z_PRIOR_MULTIBIN_DESIGN.md)** - Root-Z prior-centered multibin 设计说明
+  - 仅替换 `z` 路径、保持 `x/y` 不变的 head 设计
+  - `z_prior + Δlog z` 的表达与推理恢复流程
+  - 当前 `stage1-dino_large_no_norm` 统计得到的 `k / d_min / d_max`
+  - 与现有 `softargmax3d` 的配置兼容方案
+
 - **[CHECKPOINT_TEST_WORKFLOW.md](CHECKPOINT_TEST_WORKFLOW.md)** - 指定 checkpoint 在指定数据集上的单卡测试流程
   - 如何用 `script.test` 运行单卡测试
   - 如何用 `script.evaluate` 计算完整指标
@@ -195,6 +201,8 @@
 **最后更新**: 2026-03-29
 
 **重要更新**:
+- 2026-03-30: 实现 `xy_rootz_multibin` camera head 与对应 loss/配置兼容层，当前 `*_no_norm` 配置默认仍回退到 `softargmax3d`
+- 2026-03-30: 增加 `root_z` prior-centered multibin 设计文档，并根据当前 `stage1-dino_large_no_norm` 统计结果给出 `k / d_min / d_max` 推荐值
 - 2026-03-29: 新增 `DATA.train.reweight` 配置与对应 loader，三份 `no_norm` 配置已对齐到 9 数据集并默认启用 dataset-level reweight
 - 2026-03-22: 增加当前数据集深度分布与 COCO 训练方案文档，明确 `dataset × depth-bin` 和 COCO 采样/loss 的推荐设置
 - 2026-03-22: 增加 `swinv2-large-patch4-window12-192-22k` backbone 兼容代码和 `stage1-swinv2_large.yaml`

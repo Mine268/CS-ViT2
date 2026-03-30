@@ -2,9 +2,11 @@ from typing import *
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ..utils.mano import *
 from ..utils.proj import *
+from .root_z import encode_delta_log_z_targets
 
 # 防止 norm_scale 除零的 epsilon 值（单位: mm）
 NORM_SCALE_EPSILON = 1e-6
@@ -399,12 +401,18 @@ class BundleLoss2(nn.Module):
         lambda_rel: float,
         lambda_img: float,
         lambda_coco_patch_2d: float,
+        lambda_root_z_cls: float,
+        lambda_root_z_res: float,
         supervise_global: bool,
         supervise_heatmap: bool,
         norm_by_hand: bool,
         norm_idx: List[int],
         hm_centers: Optional[Tuple[torch.Tensor]],
         hm_sigma: float,
+        cam_head_type: str = "softargmax3d",
+        root_z_num_bins: int = 8,
+        root_z_d_min: float = -0.73,
+        root_z_d_max: float = 0.74,
         reproj_loss_type: str = "robust_l1",
         reproj_loss_delta: float = 84.0,
     ):
@@ -429,18 +437,35 @@ class BundleLoss2(nn.Module):
         self.lambda_rel = lambda_rel
         self.lambda_img = lambda_img
         self.lambda_coco_patch_2d = lambda_coco_patch_2d
+        self.lambda_root_z_cls = lambda_root_z_cls
+        self.lambda_root_z_res = lambda_root_z_res
 
         self.supervise_global = supervise_global
         self.supervise_heatmap = supervise_heatmap
+        self.cam_head_type = cam_head_type
+        self.root_z_num_bins = root_z_num_bins
+        self.root_z_d_min = float(root_z_d_min)
+        self.root_z_d_max = float(root_z_d_max)
         if supervise_heatmap:
             self.register_buffer("x_centers", hm_centers[0])
             self.register_buffer("y_centers", hm_centers[1])
-            self.register_buffer("z_centers", hm_centers[2])
+            if hm_centers[2] is not None:
+                self.register_buffer("z_centers", hm_centers[2])
             self.hm_sigma = hm_sigma
         self.norm_by_hand = norm_by_hand
         self.norm_idx = norm_idx
 
         self.rmano_layer = RMANOLayer()
+
+    def _zero_like(self, tensor: torch.Tensor) -> torch.Tensor:
+        return tensor.sum() * 0.0
+
+    def _masked_mean_scalar(self, values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        mask = mask.to(dtype=values.dtype)
+        total_valid = mask.sum()
+        if total_valid.item() <= 1e-6:
+            return values.sum() * 0.0
+        return (values * mask).sum() / total_valid
 
     def get_hand_norm_scale(self, j3d: torch.Tensor, valid: torch.Tensor):
         """
@@ -487,7 +512,7 @@ class BundleLoss2(nn.Module):
 
         return loss
 
-    def forward(self, pose_pred, shape_pred, trans_pred, log_hm_pred, batch):
+    def forward(self, pose_pred, shape_pred, trans_pred, cam_aux, batch):
         """
         Args:
             xxx_pred: [b,t,48/10/3,n]
@@ -541,22 +566,82 @@ class BundleLoss2(nn.Module):
         loss_theta = robust_masked_mean(loss_theta, has_mano[..., None])
         loss_shape = self.l1(shape_pred, shape_gt)
         loss_shape = robust_masked_mean(loss_shape, has_mano[..., None])
-        if not self.supervise_heatmap:
-            loss_trans = self.l1(trans_pred, trans_gt)
-            loss_trans = robust_masked_mean(
-                loss_trans,
-                joint_3d_valid[:, :, :1] * norm_valid_gt[..., None],
+        root_valid_mask = joint_3d_valid[:, :, 0] * norm_valid_gt
+        if self.cam_head_type == "softargmax3d":
+            if not self.supervise_heatmap:
+                loss_trans = self.l1(trans_pred, trans_gt)
+                loss_trans = robust_masked_mean(
+                    loss_trans,
+                    joint_3d_valid[:, :, :1] * norm_valid_gt[..., None],
+                )
+            else:
+                loss_trans = (
+                    self.compute_hm_ce(cam_aux["log_hm_x"], trans_gt[..., 0], self.x_centers)
+                    + self.compute_hm_ce(cam_aux["log_hm_y"], trans_gt[..., 1], self.y_centers)
+                    + self.compute_hm_ce(cam_aux["log_hm_z"], trans_gt[..., 2], self.z_centers)
+                )
+                loss_trans = robust_masked_mean(
+                    loss_trans,
+                    root_valid_mask,
+                )
+            loss_trans_xy = loss_trans
+            loss_root_z_cls = self._zero_like(trans_pred)
+            loss_root_z_res = self._zero_like(trans_pred)
+            root_z_bin_acc = self._zero_like(trans_pred)
+            root_z_mae_mm = self._zero_like(trans_pred)
+        elif self.cam_head_type == "xy_rootz_multibin":
+            if self.norm_by_hand:
+                raise NotImplementedError("xy_rootz_multibin does not support norm_by_hand=true")
+            if not self.supervise_heatmap:
+                loss_trans_xy = self.l1(trans_pred[..., :2], trans_gt[..., :2])
+                loss_trans_xy = robust_masked_mean(
+                    loss_trans_xy,
+                    root_valid_mask[..., None],
+                )
+            else:
+                loss_trans_xy = (
+                    self.compute_hm_ce(cam_aux["log_hm_x"], trans_gt[..., 0], self.x_centers)
+                    + self.compute_hm_ce(cam_aux["log_hm_y"], trans_gt[..., 1], self.y_centers)
+                )
+                loss_trans_xy = robust_masked_mean(loss_trans_xy, root_valid_mask)
+
+            root_z_valid = root_valid_mask * (has_intr > 0.5).float() * (trans_gt[..., 2] > 0.0).float()
+            encoded_root_z = encode_delta_log_z_targets(
+                root_z=trans_gt[..., 2],
+                log_z_prior=cam_aux["log_z_prior"].squeeze(-1),
+                d_min=self.root_z_d_min,
+                d_max=self.root_z_d_max,
+                num_bins=self.root_z_num_bins,
             )
+            valid_bool = root_z_valid > 0.5
+            if torch.any(valid_bool):
+                loss_root_z_cls = F.cross_entropy(
+                    cam_aux["z_cls_logits"][valid_bool],
+                    encoded_root_z["bin_idx"][valid_bool],
+                    reduction="mean",
+                )
+                pred_root_z_res = cam_aux["z_residuals"].gather(
+                    dim=-1,
+                    index=encoded_root_z["bin_idx"].unsqueeze(-1),
+                ).squeeze(-1)
+                loss_root_z_res = F.smooth_l1_loss(
+                    pred_root_z_res[valid_bool],
+                    encoded_root_z["residual"][valid_bool],
+                    reduction="mean",
+                    beta=0.1,
+                )
+                pred_bin = torch.argmax(cam_aux["z_cls_logits"], dim=-1)
+                root_z_bin_acc = (pred_bin[valid_bool] == encoded_root_z["bin_idx"][valid_bool]).float().mean()
+                root_z_mae_mm = torch.abs(trans_pred[..., 2] - trans_gt[..., 2])
+                root_z_mae_mm = self._masked_mean_scalar(root_z_mae_mm, root_z_valid)
+            else:
+                loss_root_z_cls = self._zero_like(trans_pred)
+                loss_root_z_res = self._zero_like(trans_pred)
+                root_z_bin_acc = self._zero_like(trans_pred)
+                root_z_mae_mm = self._zero_like(trans_pred)
+            loss_trans = loss_trans_xy
         else:
-            loss_trans = (
-                self.compute_hm_ce(log_hm_pred[0], trans_gt[..., 0], self.x_centers)
-                + self.compute_hm_ce(log_hm_pred[1], trans_gt[..., 1], self.y_centers)
-                + self.compute_hm_ce(log_hm_pred[2], trans_gt[..., 2], self.z_centers)
-            )
-            loss_trans = robust_masked_mean(
-                loss_trans,
-                joint_3d_valid[:, :, 0] * norm_valid_gt,
-            )
+            raise ValueError(f"Unsupported cam_head_type in loss: {self.cam_head_type}")
 
         loss_joint_rel = self.l1(joint_rel_pred, batch["joint_rel"])
         loss_joint_rel = robust_masked_mean(
@@ -607,7 +692,9 @@ class BundleLoss2(nn.Module):
         loss = (
             self.lambda_theta * loss_theta
             + self.lambda_shape * loss_shape
-            + self.lambda_trans * loss_trans
+            + self.lambda_trans * loss_trans_xy
+            + self.lambda_root_z_cls * loss_root_z_cls
+            + self.lambda_root_z_res * loss_root_z_res
             + self.lambda_rel * loss_joint_rel
             + self.lambda_img * loss_joint_img
             + self.lambda_coco_patch_2d * loss_coco_patch_2d
@@ -617,6 +704,11 @@ class BundleLoss2(nn.Module):
             "loss_theta": loss_theta.detach(),
             "loss_shape": loss_shape.detach(),
             "loss_trans": loss_trans.detach(),
+            "loss_trans_xy": loss_trans_xy.detach(),
+            "loss_root_z_cls": loss_root_z_cls.detach(),
+            "loss_root_z_res": loss_root_z_res.detach(),
+            "root_z_bin_acc": root_z_bin_acc.detach(),
+            "root_z_mae_mm": root_z_mae_mm.detach(),
             "loss_joint_rel": loss_joint_rel.detach(),
             "loss_joint_img": loss_joint_img.detach(),
             "loss_coco_patch_2d": loss_coco_patch_2d.detach(),

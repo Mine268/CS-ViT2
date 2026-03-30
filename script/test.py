@@ -166,6 +166,16 @@ def setup_model(cfg: DictConfig):
         norm_by_hand=cfg.MODEL.get("norm_by_hand", False),
         reproj_loss_type=cfg.LOSS.get("reproj_loss_type", "l1"),
         reproj_loss_delta=cfg.LOSS.get("reproj_loss_delta", 84.0),
+        handec_cam_head_type=cfg.MODEL.handec.get("cam_head_type", "softargmax3d"),
+        root_z_num_bins=cfg.MODEL.handec.get("root_z", {}).get("num_bins", 8),
+        root_z_d_min=cfg.MODEL.handec.get("root_z", {}).get("d_min", -0.73),
+        root_z_d_max=cfg.MODEL.handec.get("root_z", {}).get("d_max", 0.74),
+        root_z_prior_k=cfg.MODEL.handec.get("root_z", {}).get("prior_k", 121.0),
+        root_z_geom_hidden_dim=cfg.MODEL.handec.get("root_z", {}).get("geom_hidden_dim", 256),
+        root_z_dropout=cfg.MODEL.handec.get("root_z", {}).get("dropout", 0.0),
+        root_z_use_data_source_embed=cfg.MODEL.handec.get("root_z", {}).get("use_data_source_embed", False),
+        lambda_root_z_cls=cfg.LOSS.get("lambda_root_z_cls", 1.0),
+        lambda_root_z_res=cfg.LOSS.get("lambda_root_z_res", 1.0),
     )
 
     return net
@@ -245,6 +255,7 @@ def test(
             focal=batch["focal"],
             princpt=batch["princpt"],
             timestamp=batch["timestamp"],
+            hand_bbox=batch.get("hand_bbox", batch["patch_bbox"]),
             joint_cam_gt=batch["joint_cam"],
             joint_3d_valid_gt=batch["joint_3d_valid"],
         )

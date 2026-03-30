@@ -166,7 +166,16 @@ MODEL:
     skip_token_embed: false
     use_mean_init: false
     denorm_output: false
+    cam_head_type: softargmax3d
     heatmap_resolution: [512, 512, 1024]
+    root_z:
+      num_bins: 8
+      d_min: -0.73
+      d_max: 0.74
+      prior_k: 121.0
+      geom_hidden_dim: 256
+      dropout: 0.1
+      use_data_source_embed: false
   persp_info_embed:
     type: "ca"
     num_sample: 8
@@ -181,6 +190,8 @@ LOSS:
   lambda_theta: 3.0
   lambda_shape: 3.0
   lambda_trans: 0.05
+  lambda_root_z_cls: 1.0
+  lambda_root_z_res: 1.0
   lambda_rel: 0.012
   lambda_img: 0.002
   lambda_coco_patch_2d: 0.0005

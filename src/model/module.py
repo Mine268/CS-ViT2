@@ -11,6 +11,11 @@ from accelerate.logging import get_logger
 from ..constant import *
 from ..utils.rot import *
 from .hamer_module import Attention, PreNorm, FeedForward, TransformerDecoder, default
+from .root_z import (
+    ROOT_Z_GEOM_DIM,
+    compute_root_z_prior_and_geom,
+    decode_delta_log_z_predictions,
+)
 
 
 logger = get_logger(__name__)
@@ -599,6 +604,118 @@ class SoftargmaxHead3D(nn.Module):
         return (self.x_centers, self.y_centers, self.z_centers)
 
 
+class SoftargmaxHead2D(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        resolution: Tuple[int, int],
+        x_range,
+        y_range,
+    ):
+        super().__init__()
+
+        self.decx = nn.Linear(dim, resolution[0], bias=False)
+        self.decy = nn.Linear(dim, resolution[1], bias=False)
+
+        self.register_buffer("x_centers", torch.linspace(x_range[0], x_range[1], resolution[0]))
+        self.register_buffer("y_centers", torch.linspace(y_range[0], y_range[1], resolution[1]))
+
+    def forward(self, token: torch.Tensor):
+        out_x = self.decx(token)
+        out_y = self.decy(token)
+
+        log_hm_x = torch.nn.functional.log_softmax(out_x, dim=-1)
+        log_hm_y = torch.nn.functional.log_softmax(out_y, dim=-1)
+
+        hm_x = torch.nn.functional.softmax(out_x, dim=-1)
+        hm_y = torch.nn.functional.softmax(out_y, dim=-1)
+
+        pred_x = torch.sum(hm_x * self.x_centers[None, :], dim=-1, keepdim=True)
+        pred_y = torch.sum(hm_y * self.y_centers[None, :], dim=-1, keepdim=True)
+
+        return torch.cat([pred_x, pred_y], dim=-1), (log_hm_x, log_hm_y)
+
+    def get_centers(self):
+        return (self.x_centers, self.y_centers)
+
+
+class RootZMultiBinHead(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_bins: int,
+        d_min: float,
+        d_max: float,
+        prior_k: float,
+        geom_hidden_dim: int = 256,
+        dropout: float = 0.0,
+        use_data_source_embed: bool = False,
+    ):
+        super().__init__()
+        if use_data_source_embed:
+            raise NotImplementedError("data_source embedding is not implemented in RootZMultiBinHead")
+        if num_bins <= 0:
+            raise ValueError(f"num_bins must be positive, got {num_bins}")
+        if d_max <= d_min:
+            raise ValueError(f"d_max must be larger than d_min, got {d_min} >= {d_max}")
+
+        self.num_bins = num_bins
+        self.d_min = float(d_min)
+        self.d_max = float(d_max)
+        self.prior_k = float(prior_k)
+
+        self.geom_proj = nn.Sequential(
+            nn.Linear(ROOT_Z_GEOM_DIM, geom_hidden_dim, bias=True),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(geom_hidden_dim, geom_hidden_dim, bias=True),
+            nn.GELU(),
+        )
+        self.fusion_norm = nn.LayerNorm(dim + geom_hidden_dim)
+        self.cls_head = nn.Linear(dim + geom_hidden_dim, num_bins, bias=True)
+        self.res_head = nn.Linear(dim + geom_hidden_dim, num_bins, bias=True)
+
+    def forward(
+        self,
+        token: torch.Tensor,
+        hand_bbox: torch.Tensor,
+        focal: torch.Tensor,
+        princpt: torch.Tensor,
+    ):
+        z_prior, log_z_prior, geom_feat = compute_root_z_prior_and_geom(
+            hand_bbox=hand_bbox,
+            focal=focal,
+            princpt=princpt,
+            prior_k=self.prior_k,
+        )
+        geom_hidden = self.geom_proj(geom_feat)
+        fused = self.fusion_norm(torch.cat([token, geom_hidden], dim=-1))
+
+        z_cls_logits = self.cls_head(fused)
+        z_residuals = self.res_head(fused)
+        decoded = decode_delta_log_z_predictions(
+            z_cls_logits=z_cls_logits,
+            z_residuals=z_residuals,
+            log_z_prior=log_z_prior,
+            d_min=self.d_min,
+            d_max=self.d_max,
+        )
+
+        aux = {
+            "cam_head_type": "xy_rootz_multibin",
+            "z_cls_logits": z_cls_logits,
+            "z_residuals": z_residuals,
+            "z_prior": z_prior[..., None],
+            "log_z_prior": log_z_prior[..., None],
+            "root_z_geom_feat": geom_feat,
+            "pred_z_bin": decoded["pred_bin"],
+            "pred_z_residual": decoded["pred_residual"],
+            "pred_delta_log_z": decoded["pred_delta_log_z"][..., None],
+            "pred_log_z": decoded["pred_log_z"][..., None],
+        }
+        return decoded["pred_z"][..., None], aux
+
+
 # ref: hamer
 class MANOTransformerDecoderHead(nn.Module):
     def __init__(
@@ -622,13 +739,26 @@ class MANOTransformerDecoderHead(nn.Module):
         denorm_output: bool = False,
         norm_by_hand: bool = False,
         heatmap_resolution: Union[int, Tuple[int]] = (1024, 1024, 2048),
+        cam_head_type: str = "softargmax3d",
+        root_z_num_bins: int = 8,
+        root_z_d_min: float = -0.73,
+        root_z_d_max: float = 0.74,
+        root_z_prior_k: float = 121.0,
+        root_z_geom_hidden_dim: int = 256,
+        root_z_dropout: float = 0.0,
+        root_z_use_data_source_embed: bool = False,
     ):
         super().__init__()
         assert joint_rep_type in JOINT_DIM_DICT
+        if cam_head_type not in {"softargmax3d", "xy_rootz_multibin"}:
+            raise ValueError(f"Unsupported cam_head_type: {cam_head_type}")
+        if isinstance(heatmap_resolution, int):
+            heatmap_resolution = (heatmap_resolution, heatmap_resolution, heatmap_resolution)
 
         self.joint_rep_type = joint_rep_type
         self.joint_dim = JOINT_DIM_DICT[joint_rep_type]
         npose = self.joint_dim * MANO_JOINT_COUNT
+        self.cam_head_type = cam_head_type
 
         self.transformer = TransformerDecoder(
             num_tokens=1,
@@ -655,22 +785,42 @@ class MANOTransformerDecoderHead(nn.Module):
         if norm_by_hand:
             norm_mean = norm_stats["norm_mean"]
             norm_std = norm_stats["norm_std"]
-            self.deccam = SoftargmaxHead3D(
-                dim,
-                heatmap_resolution,
-                [norm_mean[0] - norm_std[0] * 5, norm_mean[0] + norm_std[0] * 5],  # 4σ → 5σ
-                [norm_mean[1] - norm_std[1] * 5, norm_mean[1] + norm_std[1] * 5],  # 4σ → 5σ
-                [norm_mean[2] - norm_std[2] * 5, norm_mean[2] + norm_std[2] * 5],  # 4σ → 5σ
-            )
         else:
             mean = norm_stats["mean"]
             std = norm_stats["std"]
+        x_range = [mean[0] - std[0] * 5, mean[0] + std[0] * 5] if not norm_by_hand else [norm_mean[0] - norm_std[0] * 5, norm_mean[0] + norm_std[0] * 5]
+        y_range = [mean[1] - std[1] * 5, mean[1] + std[1] * 5] if not norm_by_hand else [norm_mean[1] - norm_std[1] * 5, norm_mean[1] + norm_std[1] * 5]
+        z_range = [mean[2] - std[2] * 5, mean[2] + std[2] * 5] if not norm_by_hand else [norm_mean[2] - norm_std[2] * 5, norm_mean[2] + norm_std[2] * 5]
+
+        if self.cam_head_type == "softargmax3d":
             self.deccam = SoftargmaxHead3D(
                 dim,
                 heatmap_resolution,
-                [mean[0] - std[0] * 5, mean[0] + std[0] * 5],  # 4σ → 5σ
-                [mean[1] - std[1] * 5, mean[1] + std[1] * 5],  # 4σ → 5σ
-                [mean[2] - std[2] * 5, mean[2] + std[2] * 5],  # 4σ → 5σ
+                x_range,
+                y_range,
+                z_range,
+            )
+            self.deccam_xy = None
+            self.decz = None
+        else:
+            if norm_by_hand:
+                raise NotImplementedError("xy_rootz_multibin does not support norm_by_hand=true")
+            self.deccam = None
+            self.deccam_xy = SoftargmaxHead2D(
+                dim,
+                (heatmap_resolution[0], heatmap_resolution[1]),
+                x_range,
+                y_range,
+            )
+            self.decz = RootZMultiBinHead(
+                dim=dim,
+                num_bins=root_z_num_bins,
+                d_min=root_z_d_min,
+                d_max=root_z_d_max,
+                prior_k=root_z_prior_k,
+                geom_hidden_dim=root_z_geom_hidden_dim,
+                dropout=root_z_dropout,
+                use_data_source_embed=root_z_use_data_source_embed,
             )
 
         self.npose = JOINT_DIM_DICT[joint_rep_type] * MANO_JOINT_COUNT
@@ -726,10 +876,21 @@ class MANOTransformerDecoderHead(nn.Module):
             self.register_buffer("scale_tril", lmat.transpose(-1, -2))
             self.register_buffer("output_mean", mano_mean)
 
-    def forward(self, x: torch.Tensor):
+    def forward(
+        self,
+        x: torch.Tensor,
+        hand_bbox: Optional[torch.Tensor] = None,
+        focal: Optional[torch.Tensor] = None,
+        princpt: Optional[torch.Tensor] = None,
+    ):
         token_out = self.encode_img(x)
-        (pred_hand_pose, pred_betas, pred_cam), pred_log_heatmaps = self.decode_token(token_out)
-        return (pred_hand_pose, pred_betas, pred_cam), pred_log_heatmaps, token_out
+        (pred_hand_pose, pred_betas, pred_cam), cam_aux = self.decode_token(
+            token_out,
+            hand_bbox=hand_bbox,
+            focal=focal,
+            princpt=princpt,
+        )
+        return (pred_hand_pose, pred_betas, pred_cam), cam_aux, token_out
 
     def encode_img(self, x: torch.Tensor):
         batch_size = x.shape[0]
@@ -744,10 +905,39 @@ class MANOTransformerDecoderHead(nn.Module):
         token_out = token_out.squeeze(1)
         return token_out
 
-    def decode_token(self, token_out: torch.Tensor):
+    def decode_token(
+        self,
+        token_out: torch.Tensor,
+        hand_bbox: Optional[torch.Tensor] = None,
+        focal: Optional[torch.Tensor] = None,
+        princpt: Optional[torch.Tensor] = None,
+    ):
         pred_hand_pose = self.decpose(token_out) # + init_hand_pose
         pred_betas = self.decshape(token_out) # + init_betas
-        pred_cam, pred_log_heatmaps = self.deccam(token_out) # + init_cam
+        if self.cam_head_type == "softargmax3d":
+            pred_cam, pred_log_heatmaps = self.deccam(token_out) # + init_cam
+            cam_aux = {
+                "cam_head_type": self.cam_head_type,
+                "log_hm_x": pred_log_heatmaps[0],
+                "log_hm_y": pred_log_heatmaps[1],
+                "log_hm_z": pred_log_heatmaps[2],
+            }
+        else:
+            if hand_bbox is None or focal is None or princpt is None:
+                raise ValueError("xy_rootz_multibin requires hand_bbox/focal/princpt inputs")
+            pred_xy, pred_log_heatmaps_xy = self.deccam_xy(token_out)
+            pred_z, root_z_aux = self.decz(
+                token=token_out,
+                hand_bbox=hand_bbox,
+                focal=focal,
+                princpt=princpt,
+            )
+            pred_cam = torch.cat([pred_xy, pred_z], dim=-1)
+            cam_aux = {
+                "cam_head_type": self.cam_head_type,
+                "log_hm_x": pred_log_heatmaps_xy[0],
+                "log_hm_y": pred_log_heatmaps_xy[1],
+            } | root_z_aux
 
         if self.denorm_output:
             # [b,d]
@@ -758,10 +948,12 @@ class MANOTransformerDecoderHead(nn.Module):
             pred_betas = pred_mano_param[:, self.npose : self.npose + MANO_SHAPE_DIM]
             pred_cam = pred_mano_param[:, -3:]
 
-        return (pred_hand_pose, pred_betas, pred_cam), pred_log_heatmaps
+        return (pred_hand_pose, pred_betas, pred_cam), cam_aux
 
     def get_centers(self):
-        return self.deccam.get_centers()
+        if self.cam_head_type == "softargmax3d":
+            return self.deccam.get_centers()
+        return (*self.deccam_xy.get_centers(), None)
 
 
 class TemporalEncoder(nn.Module):
