@@ -257,6 +257,10 @@ def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None)
     train_sampling_cfg = cfg.DATA.train.get("sampling", {})
     train_depth_bin_cfg = cfg.DATA.train.get("depth_bins", {})
     train_reweight_cfg = cfg.DATA.train.get("reweight", {})
+    train_num_workers = cfg.GENERAL.num_worker
+    train_prefetch_factor = cfg.GENERAL.prefetch_factor
+    train_shardshuffle = train_sampling_cfg.get("shardshuffle", 64)
+    train_post_clip_shuffle = train_sampling_cfg.get("post_clip_shuffle", 64)
 
     if train_depth_bin_cfg.get("enabled", False) and train_reweight_cfg.get("enabled", False):
         raise ValueError(
@@ -291,13 +295,13 @@ def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None)
             train_loader = get_dataset_bin_balanced_dataloader(
                 cell_sources=cell_sources,
                 batch_size=cfg.TRAIN.sample_per_device,
-                num_workers=cfg.GENERAL.num_worker,
-                prefetcher_factor=cfg.GENERAL.prefetch_factor,
+                num_workers=train_num_workers,
+                prefetcher_factor=train_prefetch_factor,
                 infinite=True,
                 seed=cfg.GENERAL.get("seed", None),
                 dataset_balance_alpha=train_depth_bin_cfg.get("dataset_balance_alpha", 0.5),
-                shardshuffle=train_depth_bin_cfg.get("shardshuffle", False),
-                sample_shuffle=train_depth_bin_cfg.get("sample_shuffle", 200),
+                shardshuffle=train_depth_bin_cfg.get("shardshuffle", train_shardshuffle),
+                sample_shuffle=train_depth_bin_cfg.get("sample_shuffle", 64),
             )
             logger.info(
                 f"setup dataset-bin-balanced train loader: root={train_depth_bin_cfg['root']} "
@@ -324,13 +328,13 @@ def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None)
             train_loader = get_depth_bin_dataloader(
                 bin_sources=bin_sources,
                 batch_size=cfg.TRAIN.sample_per_device,
-                num_workers=cfg.GENERAL.num_worker,
-                prefetcher_factor=cfg.GENERAL.prefetch_factor,
+                num_workers=train_num_workers,
+                prefetcher_factor=train_prefetch_factor,
                 infinite=True,
                 seed=cfg.GENERAL.get("seed", None),
                 bin_weights=bin_weights,
-                shardshuffle=train_depth_bin_cfg.get("shardshuffle", False),
-                sample_shuffle=train_depth_bin_cfg.get("sample_shuffle", 200),
+                shardshuffle=train_depth_bin_cfg.get("shardshuffle", train_shardshuffle),
+                sample_shuffle=train_depth_bin_cfg.get("sample_shuffle", 64),
                 mix_strategy=mix_strategy,
             )
             logger.info(
@@ -352,19 +356,19 @@ def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None)
             num_frames=cfg.MODEL.num_frame,
             stride=cfg.DATA.train.stride,
             batch_size=cfg.TRAIN.sample_per_device,
-            num_workers=cfg.GENERAL.num_worker,
-            prefetcher_factor=cfg.GENERAL.prefetch_factor,
+            num_workers=train_num_workers,
+            prefetcher_factor=train_prefetch_factor,
             infinite=True,
             seed=cfg.GENERAL.get("seed", None),
             clip_sampling_mode=train_sampling_cfg.get("mode", "dense"),
             clips_per_sequence=train_sampling_cfg.get("clips_per_sequence", None),
             shardshuffle=train_reweight_cfg.get(
                 "shardshuffle",
-                train_sampling_cfg.get("shardshuffle", False),
+                train_shardshuffle,
             ),
             post_clip_shuffle=train_reweight_cfg.get(
                 "post_clip_shuffle",
-                train_sampling_cfg.get("post_clip_shuffle", 200),
+                train_post_clip_shuffle,
             ),
             default_source_split=train_reweight_cfg.get("split", "train"),
         )
@@ -386,13 +390,13 @@ def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None)
             num_frames=cfg.MODEL.num_frame,
             stride=cfg.DATA.train.stride,
             batch_size=cfg.TRAIN.sample_per_device,
-            num_workers=cfg.GENERAL.num_worker,
-            prefetcher_factor=cfg.GENERAL.prefetch_factor,
+            num_workers=train_num_workers,
+            prefetcher_factor=train_prefetch_factor,
             infinite=True,
             clip_sampling_mode=train_sampling_cfg.get("mode", "dense"),
             clips_per_sequence=train_sampling_cfg.get("clips_per_sequence", None),
-            shardshuffle=train_sampling_cfg.get("shardshuffle", False),
-            post_clip_shuffle=train_sampling_cfg.get("post_clip_shuffle", 200),
+            shardshuffle=train_shardshuffle,
+            post_clip_shuffle=train_post_clip_shuffle,
         )
         logger.info(f"setup train loader: {train_sources}")
 

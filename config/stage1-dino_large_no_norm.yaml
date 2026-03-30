@@ -24,8 +24,8 @@ GENERAL:
   warmup_step: 5000
   dropout_warmup_step: 10000  # Dropout渐进式预热步数
   cosine_cycle: 0.4
-  num_worker: 8
-  prefetch_factor: 2
+  num_worker: 2
+  prefetch_factor: 1
   seed: 3229084
   val_seed: 42  # 验证集固定seed，确保每次验证使用相同数据
   resume_path: null
@@ -100,8 +100,8 @@ DATA:
         - name: RHD
           source: /mnt/qnap/data/datasets/webdatasets2/RHD/train/*
           weight: 0.10
-      shardshuffle: 128
-      post_clip_shuffle: 2048
+      shardshuffle: 64
+      post_clip_shuffle: 64
     depth_bins:
       # 当前 9 数据集混训默认走 reweight；depth_bins 仍只保留给旧的 4 数据集实验。
       enabled: false
@@ -114,13 +114,13 @@ DATA:
       bin_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
       dataset_balance_alpha: 0.0
       min_cell_samples: 1000
-      shardshuffle: false
-      sample_shuffle: 200
+      shardshuffle: 64
+      sample_shuffle: 64
     sampling:
       mode: random_clip
       clips_per_sequence: 1
-      shardshuffle: 128
-      post_clip_shuffle: 2048
+      shardshuffle: 64
+      post_clip_shuffle: 64
   val:
     source: [
       /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/val/*,
