@@ -32,6 +32,7 @@
 - **[DATASET_REWEIGHT_CONFIG.md](DATASET_REWEIGHT_CONFIG.md)** - dataset-level reweight 配置说明
   - `DATA.train.reweight` 的配置位置与生效规则
   - 与 `depth_bins` 的互斥关系
+  - 当前 train-only sample filter 的默认阈值
   - 当前三份 `no_norm` 配置的默认权重
   - `COCO-WholeBody` 在 reweight 下的注意事项
 
@@ -39,6 +40,7 @@
   - 仅替换 `z` 路径、保持 `x/y` 不变的 head 设计
   - `z_prior + Δlog z` 的表达与推理恢复流程
   - 当前 `stage1-dino_large_no_norm` 统计得到的 `k / d_min / d_max`
+  - train-only filter 与 root-z-only stricter mask 的设计
   - 与现有 `softargmax3d` 的配置兼容方案
 
 - **[CHECKPOINT_TEST_WORKFLOW.md](CHECKPOINT_TEST_WORKFLOW.md)** - 指定 checkpoint 在指定数据集上的单卡测试流程

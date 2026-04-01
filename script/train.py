@@ -23,6 +23,7 @@ from aim import Run, Image
 
 from src.data.dataloader import get_dataloader
 from src.data.dataloader import (
+    build_clip_sample_filter_fn,
     estimate_wds_shard_clip_counts,
     build_balanced_clip_segments,
     compute_dataset_reweight_probs,
@@ -257,10 +258,16 @@ def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None)
     train_sampling_cfg = cfg.DATA.train.get("sampling", {})
     train_depth_bin_cfg = cfg.DATA.train.get("depth_bins", {})
     train_reweight_cfg = cfg.DATA.train.get("reweight", {})
+    train_filter_cfg = cfg.DATA.train.get("filter", {})
+    val_filter_cfg = cfg.DATA.val.get("filter", {})
+    test_filter_cfg = cfg.DATA.test.get("filter", {})
     train_num_workers = cfg.GENERAL.num_worker
     train_prefetch_factor = cfg.GENERAL.prefetch_factor
     train_shardshuffle = train_sampling_cfg.get("shardshuffle", 64)
     train_post_clip_shuffle = train_sampling_cfg.get("post_clip_shuffle", 64)
+    train_sample_filter = build_clip_sample_filter_fn(train_filter_cfg)
+    val_sample_filter = build_clip_sample_filter_fn(val_filter_cfg)
+    _ = build_clip_sample_filter_fn(test_filter_cfg)
 
     if train_depth_bin_cfg.get("enabled", False) and train_reweight_cfg.get("enabled", False):
         raise ValueError(
@@ -371,6 +378,7 @@ def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None)
                 train_post_clip_shuffle,
             ),
             default_source_split=train_reweight_cfg.get("split", "train"),
+            sample_filter=train_sample_filter,
         )
         logger.info(
             "setup reweight train loader: datasets=%s weights=%s num_frames=%s stride=%s",
@@ -397,6 +405,7 @@ def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None)
             clips_per_sequence=train_sampling_cfg.get("clips_per_sequence", None),
             shardshuffle=train_shardshuffle,
             post_clip_shuffle=train_post_clip_shuffle,
+            sample_filter=train_sample_filter,
         )
         logger.info(f"setup train loader: {train_sources}")
 
@@ -451,6 +460,7 @@ def setup_dataloader(cfg: DictConfig, accelerator: Optional[Accelerator] = None)
             clips_per_sequence=val_sampling_cfg.get("clips_per_sequence", None),
             shardshuffle=val_sampling_cfg.get("shardshuffle", False),
             post_clip_shuffle=val_sampling_cfg.get("post_clip_shuffle", 200),
+            sample_filter=val_sample_filter,
         )
         logger.info(f"setup val loader: {val_sources}")
 
@@ -514,6 +524,8 @@ def setup_model(cfg: DictConfig):
         root_z_num_bins=cfg.MODEL.handec.get("root_z", {}).get("num_bins", 8),
         root_z_d_min=cfg.MODEL.handec.get("root_z", {}).get("d_min", -0.73),
         root_z_d_max=cfg.MODEL.handec.get("root_z", {}).get("d_max", 0.74),
+        root_z_min_valid_joints_2d=cfg.DATA.train.get("filter", {}).get("min_valid_joints_2d", 0),
+        root_z_min_hand_bbox_edge_px=cfg.DATA.train.get("filter", {}).get("min_hand_bbox_edge_px", 0.0),
         root_z_prior_k=cfg.MODEL.handec.get("root_z", {}).get("prior_k", 121.0),
         root_z_geom_hidden_dim=cfg.MODEL.handec.get("root_z", {}).get("geom_hidden_dim", 256),
         root_z_dropout=cfg.MODEL.handec.get("root_z", {}).get("dropout", 0.0),

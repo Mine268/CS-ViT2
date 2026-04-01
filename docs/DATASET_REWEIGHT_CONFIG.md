@@ -80,6 +80,27 @@ DATA:
 - 当前 9 数据集混训默认建议走 `reweight`。
 - `depth_bins` 仍只适合已经准备好外部 `/mnt/qnap/.../depth-bins` 数据的实验。
 
+## 4.1 当前 train-only filter 配置
+
+当前三份 `*_no_norm` 配置还默认启用了 train-only clip filter：
+
+```yaml
+DATA:
+  train:
+    filter:
+      enabled: true
+      min_valid_joints_2d: 16
+      min_hand_bbox_edge_px: 8
+      frame_policy: all
+```
+
+说明：
+
+- 该过滤仅在 `train` dataloader 生效；
+- `val/test` 只保留接口，默认关闭；
+- 过滤发生在 clip 切分后、图像 decode 前；
+- 目标是尽早剔除 `few-valid / tiny-bbox` 的退化样本，避免污染训练。
+
 ## 5. 当前默认权重
 
 当前三份默认启用 `reweight` 的配置：
@@ -99,6 +120,11 @@ DATA:
 - `InterHand2.6M`: `0.20`
 - `MTC`: `0.15`
 - `RHD`: `0.10`
+
+说明：
+
+- 当前默认配置已将 `COCO-WholeBody` 条目注释掉；
+- 若需要重新启用，只需取消对应 `source` 与 `reweight.datasets` 条目的注释。
 
 ## 6. COCO-WholeBody 注意事项
 

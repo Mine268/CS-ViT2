@@ -261,6 +261,40 @@ LOSS:
 
 - `uniform` bin weight
 
+### 8.3 Train-only 样本过滤与 root-z-only mask
+
+当前实现已补上两层保护：
+
+1. **train-only dataloader clip filter**
+   - 仅在 `DATA.train.filter.enabled=true` 时生效
+   - 在 clip 切分后、图像 decode 前过滤明显退化样本
+
+2. **root-z-only stricter mask**
+   - 即使样本进入 batch
+   - 也只有满足更严格条件的 frame 才参与 `root_z cls/res` 监督
+   - 其它 loss（如 `x/y / rel / reproj`）仍可继续使用该样本
+
+当前默认阈值：
+
+```yaml
+DATA:
+  train:
+    filter:
+      enabled: true
+      min_valid_joints_2d: 16
+      min_hand_bbox_edge_px: 8
+      frame_policy: all
+```
+
+设计动机：
+
+- 全量统计显示：
+  - `few valid joints`
+  - `tiny hand bbox`
+  与 `Δlog z` outlier 强相关；
+- 因此第一版优先先把这些明显退化样本排除在 root-z 监督之外；
+- `val/test` 仅保留接口，默认关闭，不改变评估口径。
+
 ## 9. 超参数统计与当前推荐值
 
 统计来源：
@@ -368,6 +402,9 @@ d_max = p99 + 0.1 =  0.741814
    - `d_min = -0.73`
    - `d_max = 0.74`
    - `K = 8`
-5. bin weight 先用 `uniform`
+5. `train` 默认启用样本过滤：
+   - `min_valid_joints_2d = 16`
+   - `min_hand_bbox_edge_px = 8`
+6. bin weight 先用 `uniform`
 
 这是一套与当前代码结构、当前数据重权重配置以及已完成统计都相互一致的首版方案。

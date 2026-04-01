@@ -11,12 +11,12 @@
 
 当前默认配置状态：
 
-- [stage1-dino_large_no_norm.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-dino_large_no_norm.yaml) 已默认加入 `COCO-WholeBody`
-- [stage1-swinv2_large_no_norm.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-swinv2_large_no_norm.yaml) 已默认加入 `COCO-WholeBody`
-- [stage2-dino_large_no_norm.yaml](/data_1/renkaiwen/CS-ViT2/config/stage2-dino_large_no_norm.yaml) 已默认加入 `COCO-WholeBody`
+- [stage1-dino_large_no_norm.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-dino_large_no_norm.yaml) 当前已将 `COCO-WholeBody` 训练源注释掉
+- [stage1-swinv2_large_no_norm.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-swinv2_large_no_norm.yaml) 当前已将 `COCO-WholeBody` 训练源注释掉
+- [stage2-dino_large_no_norm.yaml](/data_1/renkaiwen/CS-ViT2/config/stage2-dino_large_no_norm.yaml) 当前已将 `COCO-WholeBody` 训练源注释掉
 - [stage1-dino_large.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-dino_large.yaml) 未默认加入，因为 `MODEL.norm_by_hand=true`
 - [stage1-swinv2_large.yaml](/data_1/renkaiwen/CS-ViT2/config/stage1-swinv2_large.yaml) 未默认加入，因为 `MODEL.norm_by_hand=true`
-- 当前 `no_norm` 配置默认通过 `DATA.train.reweight` 控制 `COCO-WholeBody` 的混采比例
+- 当前代码仍支持通过 `DATA.train.reweight` 显式接回 `COCO-WholeBody`
 
 ## Loss 设计
 

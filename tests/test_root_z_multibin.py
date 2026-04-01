@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from script.train import setup_model, setup_optim, setup_scheduler
 from src.model.module import MANOTransformerDecoderHead
+from src.model.loss import BundleLoss2
 from src.model.root_z import (
     ROOT_Z_GEOM_DIM,
     compute_root_z_prior_and_geom,
@@ -380,3 +381,66 @@ def test_full_train_flow_stage1_yaml_xy_rootz_multibin(tmp_path):
 
 def test_full_train_flow_stage2_yaml_xy_rootz_multibin(tmp_path):
     _run_full_train_flow_smoke("config/stage2-dino_large_no_norm.yaml", tmp_path)
+
+
+def test_root_z_frame_filter_mask_respects_bbox_and_valid_thresholds():
+    loss_fn = BundleLoss2(
+        lambda_theta=1.0,
+        lambda_shape=1.0,
+        lambda_trans=1.0,
+        lambda_rel=1.0,
+        lambda_img=1.0,
+        lambda_coco_patch_2d=0.0,
+        lambda_root_z_cls=1.0,
+        lambda_root_z_res=1.0,
+        supervise_global=True,
+        supervise_heatmap=True,
+        norm_by_hand=False,
+        norm_idx=[],
+        hm_centers=(
+            torch.linspace(-1.0, 1.0, 8),
+            torch.linspace(-1.0, 1.0, 8),
+            None,
+        ),
+        hm_sigma=1.0,
+        cam_head_type="xy_rootz_multibin",
+        root_z_num_bins=8,
+        root_z_d_min=-0.73,
+        root_z_d_max=0.74,
+        root_z_min_valid_joints_2d=16,
+        root_z_min_hand_bbox_edge_px=8.0,
+        reproj_loss_type="l1",
+        reproj_loss_delta=84.0,
+    )
+
+    batch = {
+        "hand_bbox": torch.tensor(
+            [
+                [[10.0, 20.0, 30.0, 45.0]],   # keep
+                [[10.0, 20.0, 15.0, 26.0]],   # reject by bbox
+                [[10.0, 20.0, 30.0, 45.0]],   # reject by valid count
+            ],
+            dtype=torch.float32,
+        ),
+        "joint_2d_valid": torch.tensor(
+            [
+                [[1.0] * 21],
+                [[1.0] * 21],
+                [[1.0] * 8 + [0.0] * 13],
+            ],
+            dtype=torch.float32,
+        ),
+        "joint_valid": torch.tensor(
+            [
+                [[1.0] * 21],
+                [[1.0] * 21],
+                [[1.0] * 8 + [0.0] * 13],
+            ],
+            dtype=torch.float32,
+        ),
+        "has_intr": torch.ones(3, 1, dtype=torch.float32),
+    }
+
+    frame_mask = loss_fn.compute_root_z_frame_filter_mask(batch)
+    expected = torch.tensor([[1.0], [0.0], [0.0]], dtype=torch.float32)
+    assert torch.equal(frame_mask, expected)

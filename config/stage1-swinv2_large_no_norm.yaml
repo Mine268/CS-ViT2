@@ -58,47 +58,52 @@ TRAIN:
 DATA:
   train:
     source: [
-      /mnt/qnap/data/datasets/webdatasets2/AssemblyHands/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/COCO-WholeBody/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/FreiHAND/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/MTC/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/RHD/train/*,
+      /data_0/renkaiwen/webdatasets2_512/AssemblyHands/train/*,
+      # /data_0/renkaiwen/webdatasets2_512/COCO-WholeBody/train/*,
+      /data_0/renkaiwen/webdatasets2_512/DexYCB/s1/train/*,
+      /data_0/renkaiwen/webdatasets2_512/FreiHAND/train/*,
+      /data_0/renkaiwen/webdatasets2_512/HO3D_v3/train/*,
+      /data_0/renkaiwen/webdatasets2_512/HOT3D/train/*,
+      /data_0/renkaiwen/webdatasets2_512/InterHand2.6M/train/*,
+      /data_0/renkaiwen/webdatasets2_512/MTC/train/*,
+      /data_0/renkaiwen/webdatasets2_512/RHD/train/*,
     ]
     stride: 1
+    filter:
+      enabled: true
+      min_valid_joints_2d: 16
+      min_hand_bbox_edge_px: 8
+      frame_policy: all
     reweight:
       enabled: true
       split: train
       datasets:
         - name: AssemblyHands
-          source: /mnt/qnap/data/datasets/webdatasets2/AssemblyHands/train/*
+          source: /data_0/renkaiwen/webdatasets2_512/AssemblyHands/train/*
           weight: 0.10
-        - name: COCO-WholeBody
-          source: /mnt/qnap/data/datasets/webdatasets2/COCO-WholeBody/train/*
-          weight: 0.10
+        # - name: COCO-WholeBody
+        #   source: /data_0/renkaiwen/webdatasets2_512/COCO-WholeBody/train/*
+        #   weight: 0.10
         - name: DexYCB
-          source: /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/train/*
+          source: /data_0/renkaiwen/webdatasets2_512/DexYCB/s1/train/*
           weight: 0.10
         - name: FreiHAND
-          source: /mnt/qnap/data/datasets/webdatasets2/FreiHAND/train/*
+          source: /data_0/renkaiwen/webdatasets2_512/FreiHAND/train/*
           weight: 0.15
         - name: HO3D_v3
-          source: /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*
+          source: /data_0/renkaiwen/webdatasets2_512/HO3D_v3/train/*
           weight: 0.10
         - name: HOT3D
-          source: /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*
+          source: /data_0/renkaiwen/webdatasets2_512/HOT3D/train/*
           weight: 0.10
         - name: InterHand2.6M
-          source: /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/train/*
+          source: /data_0/renkaiwen/webdatasets2_512/InterHand2.6M/train/*
           weight: 0.20
         - name: MTC
-          source: /mnt/qnap/data/datasets/webdatasets2/MTC/train/*
+          source: /data_0/renkaiwen/webdatasets2_512/MTC/train/*
           weight: 0.15
         - name: RHD
-          source: /mnt/qnap/data/datasets/webdatasets2/RHD/train/*
+          source: /data_0/renkaiwen/webdatasets2_512/RHD/train/*
           weight: 0.10
       shardshuffle: 64
       post_clip_shuffle: 64
@@ -122,10 +127,15 @@ DATA:
       post_clip_shuffle: 64
   val:
     source: [
-      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/val/*,
-      /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/val/*,
+      /data_0/renkaiwen/webdatasets2_512/InterHand2.6M/val/*,
+      /data_0/renkaiwen/webdatasets2_512/DexYCB/s1/val/*,
     ]
     stride: 1
+    filter:
+      enabled: false
+      min_valid_joints_2d: 16
+      min_hand_bbox_edge_px: 8
+      frame_policy: all
     full_eval: false
     max_val_step: 1000
     sampling:
@@ -135,6 +145,11 @@ DATA:
   test:
     source: []
     stride: 1
+    filter:
+      enabled: false
+      min_valid_joints_2d: 16
+      min_hand_bbox_edge_px: 8
+      frame_policy: all
     full_eval: false
     sampling:
       mode: dense

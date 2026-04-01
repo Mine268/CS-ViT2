@@ -413,6 +413,8 @@ class BundleLoss2(nn.Module):
         root_z_num_bins: int = 8,
         root_z_d_min: float = -0.73,
         root_z_d_max: float = 0.74,
+        root_z_min_valid_joints_2d: int = 0,
+        root_z_min_hand_bbox_edge_px: float = 0.0,
         reproj_loss_type: str = "robust_l1",
         reproj_loss_delta: float = 84.0,
     ):
@@ -446,6 +448,8 @@ class BundleLoss2(nn.Module):
         self.root_z_num_bins = root_z_num_bins
         self.root_z_d_min = float(root_z_d_min)
         self.root_z_d_max = float(root_z_d_max)
+        self.root_z_min_valid_joints_2d = int(root_z_min_valid_joints_2d)
+        self.root_z_min_hand_bbox_edge_px = float(root_z_min_hand_bbox_edge_px)
         if supervise_heatmap:
             self.register_buffer("x_centers", hm_centers[0])
             self.register_buffer("y_centers", hm_centers[1])
@@ -466,6 +470,35 @@ class BundleLoss2(nn.Module):
         if total_valid.item() <= 1e-6:
             return values.sum() * 0.0
         return (values * mask).sum() / total_valid
+
+    def compute_root_z_frame_filter_mask(self, batch) -> torch.Tensor:
+        """
+        计算 root-z supervision 的额外 frame 级过滤掩码。
+
+        这层过滤只用于 root-z 路径，不影响其它 loss：
+        - 2D valid joint 数量过少的 frame 不参与 root-z supervision
+        - hand bbox 最短边过小的 frame 不参与 root-z supervision
+        """
+        frame_mask = torch.ones_like(batch["has_intr"], dtype=torch.float32)
+
+        if self.root_z_min_valid_joints_2d > 0:
+            joint_2d_valid = batch.get("joint_2d_valid", batch["joint_valid"])
+            valid_joint_count = torch.sum(joint_2d_valid > 0.5, dim=-1)
+            frame_mask = frame_mask * (
+                valid_joint_count >= self.root_z_min_valid_joints_2d
+            ).float()
+
+        if self.root_z_min_hand_bbox_edge_px > 0:
+            hand_bbox = batch["hand_bbox"]
+            bbox_min_edge = torch.minimum(
+                hand_bbox[..., 2] - hand_bbox[..., 0],
+                hand_bbox[..., 3] - hand_bbox[..., 1],
+            )
+            frame_mask = frame_mask * (
+                bbox_min_edge >= self.root_z_min_hand_bbox_edge_px
+            ).float()
+
+        return frame_mask
 
     def get_hand_norm_scale(self, j3d: torch.Tensor, valid: torch.Tensor):
         """
@@ -605,7 +638,13 @@ class BundleLoss2(nn.Module):
                 )
                 loss_trans_xy = robust_masked_mean(loss_trans_xy, root_valid_mask)
 
-            root_z_valid = root_valid_mask * (has_intr > 0.5).float() * (trans_gt[..., 2] > 0.0).float()
+            root_z_frame_filter = self.compute_root_z_frame_filter_mask(batch)
+            root_z_valid = (
+                root_valid_mask
+                * (has_intr > 0.5).float()
+                * (trans_gt[..., 2] > 0.0).float()
+                * root_z_frame_filter
+            )
             encoded_root_z = encode_delta_log_z_targets(
                 root_z=trans_gt[..., 2],
                 log_z_prior=cam_aux["log_z_prior"].squeeze(-1),
@@ -709,6 +748,7 @@ class BundleLoss2(nn.Module):
             "loss_root_z_res": loss_root_z_res.detach(),
             "root_z_bin_acc": root_z_bin_acc.detach(),
             "root_z_mae_mm": root_z_mae_mm.detach(),
+            "root_z_valid_frac": root_z_valid.mean().detach() if self.cam_head_type == "xy_rootz_multibin" else self._zero_like(trans_pred).detach(),
             "loss_joint_rel": loss_joint_rel.detach(),
             "loss_joint_img": loss_joint_img.detach(),
             "loss_coco_patch_2d": loss_coco_patch_2d.detach(),

@@ -22,7 +22,8 @@
   - `masked loss -> masked mean`
   - `COCO-WholeBody` 专用 `2D patch auxiliary loss`
   - `val/test/evaluate` 显式排除 `COCO-WholeBody` 的 3D 指标统计
-- `COCO-WholeBody` 已可在 `no_norm` 的 Stage 1 / Stage 2 配置中作为 `2D-only` 数据混入训练
+- `COCO-WholeBody` 代码路径已可在 `no_norm` 的 Stage 1 / Stage 2 配置中作为 `2D-only` 数据混入训练
+- 当前默认 `no_norm` 配置已将 `COCO-WholeBody` 训练源注释掉，需要时再手动打开
 
 未纳入本次范围：
 - `depth_bins`

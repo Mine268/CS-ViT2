@@ -170,6 +170,8 @@ def setup_model(cfg: DictConfig):
         root_z_num_bins=cfg.MODEL.handec.get("root_z", {}).get("num_bins", 8),
         root_z_d_min=cfg.MODEL.handec.get("root_z", {}).get("d_min", -0.73),
         root_z_d_max=cfg.MODEL.handec.get("root_z", {}).get("d_max", 0.74),
+        root_z_min_valid_joints_2d=cfg.DATA.train.get("filter", {}).get("min_valid_joints_2d", 0),
+        root_z_min_hand_bbox_edge_px=cfg.DATA.train.get("filter", {}).get("min_hand_bbox_edge_px", 0.0),
         root_z_prior_k=cfg.MODEL.handec.get("root_z", {}).get("prior_k", 121.0),
         root_z_geom_hidden_dim=cfg.MODEL.handec.get("root_z", {}).get("geom_hidden_dim", 256),
         root_z_dropout=cfg.MODEL.handec.get("root_z", {}).get("dropout", 0.0),

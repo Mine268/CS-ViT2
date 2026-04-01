@@ -71,6 +71,7 @@ def clip_to_t_frames(
     seed: Optional[int] = None,
     default_data_source: Optional[str] = None,
     default_source_split: str = "unknown",
+    sample_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ):
     """
     将序列样本拆分为小片小片的连续样本
@@ -106,12 +107,15 @@ def clip_to_t_frames(
         for clip_idx in clip_indices:
             start = int(clip_idx) * stride
             end = start + num_frames
-            yield slice_normalized_clip_sample(
+            clip = slice_normalized_clip_sample(
                 clip_sample,
                 start,
                 end,
                 slice_index=int(clip_idx),
             )
+            if sample_filter is not None and not sample_filter(clip):
+                continue
+            yield clip
 
 
 def estimate_wds_shard_clip_counts(
@@ -322,6 +326,55 @@ def collate_fn(batch_wds):
     return collated
 
 
+def build_clip_sample_filter_fn(filter_cfg: Optional[Mapping[str, Any]]) -> Optional[Callable[[Dict[str, Any]], bool]]:
+    """
+    为 clip 级 sample 构造过滤函数。
+
+    过滤逻辑当前只依赖：
+    - 2D valid joint 数量
+    - hand bbox 最短边像素
+
+    这两项都在 clip 切分后即可获得，因此可以在图像解码前过滤掉明显退化的样本。
+    """
+    if filter_cfg is None or not bool(filter_cfg.get("enabled", False)):
+        return None
+
+    min_valid_joints_2d = int(filter_cfg.get("min_valid_joints_2d", 0))
+    min_hand_bbox_edge_px = float(filter_cfg.get("min_hand_bbox_edge_px", 0.0))
+    frame_policy = str(filter_cfg.get("frame_policy", "all"))
+    if frame_policy not in {"all", "last", "any"}:
+        raise ValueError(f"Unsupported frame_policy: {frame_policy}")
+
+    def _filter(clip_sample: Dict[str, Any]) -> bool:
+        hand_bbox = clip_sample.get("hand_bbox", None)
+        joint_2d_valid = clip_sample.get("joint_2d_valid", clip_sample.get("joint_valid", None))
+        if hand_bbox is None or joint_2d_valid is None:
+            return True
+
+        hand_bbox = np.asarray(hand_bbox, dtype=np.float32)
+        joint_2d_valid = np.asarray(joint_2d_valid, dtype=np.float32)
+
+        bbox_min_edge = np.minimum(
+            hand_bbox[..., 2] - hand_bbox[..., 0],
+            hand_bbox[..., 3] - hand_bbox[..., 1],
+        )
+        valid_joint_count = np.sum(joint_2d_valid > 0.5, axis=-1)
+
+        frame_ok = np.ones_like(bbox_min_edge, dtype=bool)
+        if min_valid_joints_2d > 0:
+            frame_ok &= valid_joint_count >= min_valid_joints_2d
+        if min_hand_bbox_edge_px > 0:
+            frame_ok &= bbox_min_edge >= min_hand_bbox_edge_px
+
+        if frame_policy == "all":
+            return bool(np.all(frame_ok))
+        if frame_policy == "last":
+            return bool(frame_ok[-1])
+        return bool(np.any(frame_ok))
+
+    return _filter
+
+
 def _build_clip_webdataset(
     url,
     num_frames: int,
@@ -334,6 +387,7 @@ def _build_clip_webdataset(
     post_clip_shuffle: int = 200,
     default_data_source: Optional[str] = None,
     default_source_split: str = "unknown",
+    sample_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ):
     dataset = (
         wds.WebDataset(
@@ -357,6 +411,7 @@ def _build_clip_webdataset(
             seed=seed,
             default_data_source=default_data_source,
             default_source_split=default_source_split,
+            sample_filter=sample_filter,
         )
     )
 
@@ -418,6 +473,7 @@ def get_dataloader(
     post_clip_shuffle: int = 200,
     default_data_source: Optional[str] = None,
     default_source_split: str = "unknown",
+    sample_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> wds.WebDataset:
     """获得wds数据加载器
 
@@ -440,6 +496,7 @@ def get_dataloader(
         post_clip_shuffle=post_clip_shuffle,
         default_data_source=default_data_source,
         default_source_split=default_source_split,
+        sample_filter=sample_filter,
     ).batched(
         batch_size,
         partial=False,
@@ -472,6 +529,7 @@ def get_dataset_reweight_dataloader(
     shardshuffle: Union[bool, int] = False,
     post_clip_shuffle: int = 200,
     default_source_split: str = "unknown",
+    sample_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ):
     normalized_weights = compute_dataset_reweight_probs(
         dataset_sources=dataset_sources,
@@ -495,6 +553,7 @@ def get_dataset_reweight_dataloader(
                 post_clip_shuffle=post_clip_shuffle,
                 default_data_source=dataset_name,
                 default_source_split=default_source_split,
+                sample_filter=sample_filter,
             )
         )
         probs.append(float(normalized_weights[dataset_name]))

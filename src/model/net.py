@@ -77,6 +77,8 @@ class PoseNet(nn.Module):
         root_z_num_bins: int = 8,
         root_z_d_min: float = -0.73,
         root_z_d_max: float = 0.74,
+        root_z_min_valid_joints_2d: int = 0,
+        root_z_min_hand_bbox_edge_px: float = 0.0,
         root_z_prior_k: float = 121.0,
         root_z_geom_hidden_dim: int = 256,
         root_z_dropout: float = 0.0,
@@ -206,6 +208,8 @@ class PoseNet(nn.Module):
             root_z_num_bins=root_z_num_bins,
             root_z_d_min=root_z_d_min,
             root_z_d_max=root_z_d_max,
+            root_z_min_valid_joints_2d=root_z_min_valid_joints_2d,
+            root_z_min_hand_bbox_edge_px=root_z_min_hand_bbox_edge_px,
             reproj_loss_type=reproj_loss_type,
             reproj_loss_delta=reproj_loss_delta,
         )
