@@ -58,10 +58,10 @@ TRAIN:
 DATA:
   train:
     source: [
-      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/HO3D_v3/train/*,
-      /mnt/qnap/data/datasets/webdatasets2/HOT3D/train/*
+      /data_0/renkaiwen/webdatasets2_512/InterHand2.6M/train/*,
+      /data_0/renkaiwen/webdatasets2_512/DexYCB/s1/train/*,
+      /data_0/renkaiwen/webdatasets2_512/HO3D_v3/train/*,
+      /data_0/renkaiwen/webdatasets2_512/HOT3D/train/*
     ]
     # COCO-WholeBody 当前未默认加入本配置，因为 MODEL.norm_by_hand=true 时会触发训练期断言。
     stride: 1
@@ -84,8 +84,8 @@ DATA:
       post_clip_shuffle: 512
   val:
     source: [
-      /mnt/qnap/data/datasets/webdatasets2/InterHand2.6M/val/*,
-      /mnt/qnap/data/datasets/webdatasets2/DexYCB/s1/val/*,
+      /data_0/renkaiwen/webdatasets2_512/InterHand2.6M/val/*,
+      /data_0/renkaiwen/webdatasets2_512/DexYCB/s1/val/*,
     ]
     stride: 1
     full_eval: false
