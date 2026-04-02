@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from ..utils.mano import *
 from ..utils.proj import *
-from .root_z import encode_delta_log_z_targets
+from .root_z import encode_delta_log_rho_targets, encode_delta_log_z_targets
 
 # 防止 norm_scale 除零的 epsilon 值（单位: mm）
 NORM_SCALE_EPSILON = 1e-6
@@ -400,15 +400,16 @@ class BundleLoss2(nn.Module):
         lambda_trans: float,
         lambda_rel: float,
         lambda_img: float,
-        lambda_coco_patch_2d: float,
-        lambda_root_z_cls: float,
-        lambda_root_z_res: float,
         supervise_global: bool,
         supervise_heatmap: bool,
         norm_by_hand: bool,
         norm_idx: List[int],
         hm_centers: Optional[Tuple[torch.Tensor]],
         hm_sigma: float,
+        lambda_uv_patch: float = 1.0,
+        lambda_coco_patch_2d: float = 0.0,
+        lambda_root_z_cls: float = 1.0,
+        lambda_root_z_res: float = 1.0,
         cam_head_type: str = "softargmax3d",
         root_z_num_bins: int = 8,
         root_z_d_min: float = -0.73,
@@ -438,6 +439,7 @@ class BundleLoss2(nn.Module):
         self.lambda_trans = lambda_trans
         self.lambda_rel = lambda_rel
         self.lambda_img = lambda_img
+        self.lambda_uv_patch = lambda_uv_patch
         self.lambda_coco_patch_2d = lambda_coco_patch_2d
         self.lambda_root_z_cls = lambda_root_z_cls
         self.lambda_root_z_res = lambda_root_z_res
@@ -545,6 +547,41 @@ class BundleLoss2(nn.Module):
 
         return loss
 
+    def compute_hm_ce_2d(
+        self,
+        pred_log_probs: torch.Tensor,
+        gt_coords: torch.Tensor,
+        x_grid_positions: torch.Tensor,
+        y_grid_positions: torch.Tensor,
+    ):
+        """
+        Args:
+            pred_log_probs: Tensor [..., H, W]，已经过 LogSoftmax（flatten 后）处理。
+            gt_coords: Tensor [..., 2]
+            x_grid_positions: Tensor [W]
+            y_grid_positions: Tensor [H]
+        Return:
+            [...]
+        """
+        prefix_ndim = gt_coords.dim() - 1
+
+        gt_x = gt_coords[..., 0].unsqueeze(-1).unsqueeze(-1)
+        gt_y = gt_coords[..., 1].unsqueeze(-1).unsqueeze(-1)
+
+        x_view_shape = [1] * prefix_ndim + [1, -1]
+        y_view_shape = [1] * prefix_ndim + [-1, 1]
+        x_grid = x_grid_positions.view(x_view_shape)
+        y_grid = y_grid_positions.view(y_view_shape)
+
+        squared_diff = (gt_x - x_grid) ** 2 + (gt_y - y_grid) ** 2
+        target_unnormalized = torch.exp(-squared_diff / (2 * self.hm_sigma**2))
+        target_probs = target_unnormalized / (
+            target_unnormalized.sum(dim=(-2, -1), keepdim=True) + 1e-9
+        )
+
+        loss = -(target_probs * pred_log_probs).sum(dim=(-2, -1))
+        return loss
+
     def forward(self, pose_pred, shape_pred, trans_pred, cam_aux, batch):
         """
         Args:
@@ -600,6 +637,12 @@ class BundleLoss2(nn.Module):
         loss_shape = self.l1(shape_pred, shape_gt)
         loss_shape = robust_masked_mean(loss_shape, has_mano[..., None])
         root_valid_mask = joint_3d_valid[:, :, 0] * norm_valid_gt
+        loss_uv_patch = self._zero_like(trans_pred)
+        loss_rho_cls = self._zero_like(trans_pred)
+        loss_rho_res = self._zero_like(trans_pred)
+        rho_bin_acc = self._zero_like(trans_pred)
+        rho_mae_mm = self._zero_like(trans_pred)
+        range_valid_frac = self._zero_like(trans_pred)
         if self.cam_head_type == "softargmax3d":
             if not self.supervise_heatmap:
                 loss_trans = self.l1(trans_pred, trans_gt)
@@ -679,6 +722,81 @@ class BundleLoss2(nn.Module):
                 root_z_bin_acc = self._zero_like(trans_pred)
                 root_z_mae_mm = self._zero_like(trans_pred)
             loss_trans = loss_trans_xy
+        elif self.cam_head_type == "patch_uv_rho_multibin":
+            if self.norm_by_hand:
+                raise NotImplementedError("patch_uv_rho_multibin does not support norm_by_hand=true")
+
+            root_uv_patch_gt = batch["joint_patch_resized"][:, :, 0]
+            root_uv_valid = joint_2d_valid[:, :, 0]
+            if not self.supervise_heatmap:
+                loss_uv_patch = self.l1(cam_aux["pred_uv_patch"], root_uv_patch_gt)
+                loss_uv_patch = robust_masked_mean(
+                    loss_uv_patch,
+                    root_uv_valid[..., None],
+                )
+            else:
+                loss_uv_patch = self.compute_hm_ce_2d(
+                    cam_aux["log_hm_uv_patch"],
+                    root_uv_patch_gt,
+                    self.x_centers,
+                    self.y_centers,
+                )
+                loss_uv_patch = robust_masked_mean(loss_uv_patch, root_uv_valid)
+            loss_trans_xy = loss_uv_patch
+
+            range_frame_filter = self.compute_root_z_frame_filter_mask(batch)
+            range_valid = (
+                root_valid_mask
+                * (has_intr > 0.5).float()
+                * (trans_gt[..., 2] > 0.0).float()
+                * range_frame_filter
+            )
+            rho_gt = torch.linalg.norm(trans_gt, dim=-1)
+            encoded_rho = encode_delta_log_rho_targets(
+                rho=rho_gt,
+                log_rho_prior=cam_aux["log_rho_prior"].squeeze(-1),
+                d_min=self.root_z_d_min,
+                d_max=self.root_z_d_max,
+                num_bins=self.root_z_num_bins,
+            )
+            valid_bool = range_valid > 0.5
+            if torch.any(valid_bool):
+                loss_rho_cls = F.cross_entropy(
+                    cam_aux["rho_cls_logits"][valid_bool],
+                    encoded_rho["bin_idx"][valid_bool],
+                    reduction="mean",
+                )
+                pred_rho_res = cam_aux["rho_residuals"].gather(
+                    dim=-1,
+                    index=encoded_rho["bin_idx"].unsqueeze(-1),
+                ).squeeze(-1)
+                loss_rho_res = F.smooth_l1_loss(
+                    pred_rho_res[valid_bool],
+                    encoded_rho["residual"][valid_bool],
+                    reduction="mean",
+                    beta=0.1,
+                )
+                pred_rho_bin = torch.argmax(cam_aux["rho_cls_logits"], dim=-1)
+                rho_bin_acc = (pred_rho_bin[valid_bool] == encoded_rho["bin_idx"][valid_bool]).float().mean()
+                rho_mae_mm = torch.abs(cam_aux["pred_rho"].squeeze(-1) - rho_gt)
+                rho_mae_mm = self._masked_mean_scalar(rho_mae_mm, range_valid)
+            else:
+                loss_rho_cls = self._zero_like(trans_pred)
+                loss_rho_res = self._zero_like(trans_pred)
+                rho_bin_acc = self._zero_like(trans_pred)
+                rho_mae_mm = self._zero_like(trans_pred)
+
+            loss_root_z_cls = loss_rho_cls
+            loss_root_z_res = loss_rho_res
+            root_z_bin_acc = rho_bin_acc
+            root_z_mae_mm = rho_mae_mm
+            range_valid_frac = range_valid.mean().detach()
+
+            loss_trans = self.l1(trans_pred, trans_gt)
+            loss_trans = robust_masked_mean(
+                loss_trans,
+                (root_valid_mask * (has_intr > 0.5).float())[..., None],
+            )
         else:
             raise ValueError(f"Unsupported cam_head_type in loss: {self.cam_head_type}")
 
@@ -731,7 +849,8 @@ class BundleLoss2(nn.Module):
         loss = (
             self.lambda_theta * loss_theta
             + self.lambda_shape * loss_shape
-            + self.lambda_trans * loss_trans_xy
+            + self.lambda_uv_patch * loss_uv_patch
+            + self.lambda_trans * loss_trans
             + self.lambda_root_z_cls * loss_root_z_cls
             + self.lambda_root_z_res * loss_root_z_res
             + self.lambda_rel * loss_joint_rel
@@ -744,11 +863,20 @@ class BundleLoss2(nn.Module):
             "loss_shape": loss_shape.detach(),
             "loss_trans": loss_trans.detach(),
             "loss_trans_xy": loss_trans_xy.detach(),
+            "loss_uv_patch": loss_uv_patch.detach(),
             "loss_root_z_cls": loss_root_z_cls.detach(),
             "loss_root_z_res": loss_root_z_res.detach(),
             "root_z_bin_acc": root_z_bin_acc.detach(),
             "root_z_mae_mm": root_z_mae_mm.detach(),
-            "root_z_valid_frac": root_z_valid.mean().detach() if self.cam_head_type == "xy_rootz_multibin" else self._zero_like(trans_pred).detach(),
+            "root_z_valid_frac": (
+                root_z_valid.mean().detach()
+                if self.cam_head_type == "xy_rootz_multibin"
+                else range_valid_frac.detach()
+            ),
+            "loss_rho_cls": loss_rho_cls.detach(),
+            "loss_rho_res": loss_rho_res.detach(),
+            "rho_bin_acc": rho_bin_acc.detach(),
+            "rho_mae_mm": rho_mae_mm.detach(),
             "loss_joint_rel": loss_joint_rel.detach(),
             "loss_joint_img": loss_joint_img.detach(),
             "loss_coco_patch_2d": loss_coco_patch_2d.detach(),

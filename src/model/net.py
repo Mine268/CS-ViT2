@@ -66,13 +66,14 @@ class PoseNet(nn.Module):
         lambda_trans: float,
         lambda_rel: float,
         lambda_img: float,
-        lambda_coco_patch_2d: float,
         hm_sigma: float,
         reproj_loss_type: str,
         reproj_loss_delta: float,
 
         freeze_backbone: bool,
         norm_by_hand: bool,
+        lambda_coco_patch_2d: float = 0.0,
+        lambda_uv_patch: float = 1.0,
         handec_cam_head_type: str = "softargmax3d",
         root_z_num_bins: int = 8,
         root_z_d_min: float = -0.73,
@@ -160,6 +161,7 @@ class PoseNet(nn.Module):
             denorm_output=handec_denorm_output,
             norm_by_hand=norm_by_hand,
             heatmap_resolution=handec_heatmap_resulotion,
+            patch_size=self.img_size,
             cam_head_type=handec_cam_head_type,
             root_z_num_bins=root_z_num_bins,
             root_z_d_min=root_z_d_min,
@@ -195,6 +197,7 @@ class PoseNet(nn.Module):
             lambda_trans=lambda_trans,
             lambda_rel=lambda_rel,
             lambda_img=lambda_img,
+            lambda_uv_patch=lambda_uv_patch,
             lambda_coco_patch_2d=lambda_coco_patch_2d,
             lambda_root_z_cls=lambda_root_z_cls,
             lambda_root_z_res=lambda_root_z_res,
@@ -344,6 +347,7 @@ class PoseNet(nn.Module):
         (pred_hand_pose, pred_shape, pred_trans), pred_cam_aux, pred_tokens = (
             self.handec(
                 feats,
+                patch_bbox=bbox,
                 # 新路径优先使用 hand_bbox；若调用方未提供，则退回到旧 bbox，
                 # 保证接口兼容，但语义上推荐显式传 hand_bbox。
                 hand_bbox=hand_bbox if hand_bbox is not None else bbox,
@@ -414,6 +418,7 @@ class PoseNet(nn.Module):
 
             (pose, shape, trans), cam_aux = self.handec.decode_token(
                 eps.rearrange(tokens_out, "b t d -> (b t) d"),
+                patch_bbox=bbox,
                 hand_bbox=hand_bbox,
                 focal=focal,
                 princpt=princpt,

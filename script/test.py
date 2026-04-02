@@ -159,11 +159,12 @@ def setup_model(cfg: DictConfig):
         lambda_trans=cfg.LOSS.get("lambda_trans", 0.123),
         lambda_rel=cfg.LOSS.get("lambda_rel", 0.000305),
         lambda_img=cfg.LOSS.get("lambda_img", 0.00512),
-        lambda_coco_patch_2d=cfg.LOSS.get("lambda_coco_patch_2d", 0.0),
         hm_sigma=cfg.LOSS.get("heatmap_sigma", 3),
 
         freeze_backbone=cfg.TRAIN.backbone_lr is None,
         norm_by_hand=cfg.MODEL.get("norm_by_hand", False),
+        lambda_coco_patch_2d=cfg.LOSS.get("lambda_coco_patch_2d", 0.0),
+        lambda_uv_patch=cfg.LOSS.get("lambda_uv_patch", 1.0),
         reproj_loss_type=cfg.LOSS.get("reproj_loss_type", "l1"),
         reproj_loss_delta=cfg.LOSS.get("reproj_loss_delta", 84.0),
         handec_cam_head_type=cfg.MODEL.handec.get("cam_head_type", "softargmax3d"),

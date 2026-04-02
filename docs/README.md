@@ -43,6 +43,13 @@
   - train-only filter 与 root-z-only stricter mask 的设计
   - 与现有 `softargmax3d` 的配置兼容方案
 
+- **[PATCH_UV_RHO_MULTIBIN_DESIGN.md](PATCH_UV_RHO_MULTIBIN_DESIGN.md)** - Patch-UV + Rho MultiBin camera head 设计说明
+  - 先在 patch 空间预测 root `uv`，再预测光心距离 `rho`
+  - `uv + intrinsics + rho -> xyz` 的显式反投影路径
+  - `q_ref=bbox center ray` 的动机与 full-records 数据支撑
+  - 基于 `tests/temp_root_z_prior_records_stage1_full` 重统计的 `k / d_min / d_max`
+  - 对应的 loss、接口与实现顺序建议
+
 - **[CHECKPOINT_TEST_WORKFLOW.md](CHECKPOINT_TEST_WORKFLOW.md)** - 指定 checkpoint 在指定数据集上的单卡测试流程
   - 如何用 `script.test` 运行单卡测试
   - 如何用 `script.evaluate` 计算完整指标
@@ -174,6 +181,11 @@
 2. 阅读 **[REFACTORING_SUMMARY.md](REFACTORING_SUMMARY.md)** - 了解代码如何重构
 3. 阅读 **[CODE_DESIGN.md](CODE_DESIGN.md)** - 深入理解设计原则
 
+### 如果你当前主线是 no_norm + 新 camera head
+1. 阅读 **[ROOT_Z_PRIOR_MULTIBIN_DESIGN.md](ROOT_Z_PRIOR_MULTIBIN_DESIGN.md)** - 了解当前 `xy_rootz_multibin` 的设计基线
+2. 阅读 **[PATCH_UV_RHO_MULTIBIN_DESIGN.md](PATCH_UV_RHO_MULTIBIN_DESIGN.md)** - 了解 `patch uv + rho` 新路径的表达、先验与超参数
+3. 对照 **[DATASET_REWEIGHT_CONFIG.md](DATASET_REWEIGHT_CONFIG.md)** 和 **[DATALOADER_SAMPLING_STRATEGY.md](DATALOADER_SAMPLING_STRATEGY.md)** 检查当前训练主线
+
 ### 如果你在训练 Stage 2
 1. 阅读 **[STAGE2_LAST_FRAME_ONLY_FIX.md](STAGE2_LAST_FRAME_ONLY_FIX.md)** - 了解 Stage 2 的关键修复
 2. 检查配置文件中的 `num_frame` 和 `stage1_weight` 设置
@@ -200,9 +212,10 @@
 
 ## 📅 更新日期
 
-**最后更新**: 2026-03-29
+**最后更新**: 2026-04-02
 
 **重要更新**:
+- 2026-04-02: 实现 `patch_uv_rho_multibin` camera head 的基础版本，新增设计文档，并基于 `tests/temp_root_z_prior_records_stage1_full` 重统计 `rho` 路径的 `k / d_min / d_max`
 - 2026-03-30: 实现 `xy_rootz_multibin` camera head 与对应 loss/配置兼容层，当前 `*_no_norm` 配置默认仍回退到 `softargmax3d`
 - 2026-03-30: 增加 `root_z` prior-centered multibin 设计文档，并根据当前 `stage1-dino_large_no_norm` 统计结果给出 `k / d_min / d_max` 推荐值
 - 2026-03-29: 新增 `DATA.train.reweight` 配置与对应 loader，三份 `no_norm` 配置已对齐到 9 数据集并默认启用 dataset-level reweight

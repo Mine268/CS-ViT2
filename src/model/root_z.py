@@ -7,6 +7,7 @@ import torch
 
 
 ROOT_Z_GEOM_DIM = 6
+RHO_GEOM_DIM = 6
 ROOT_Z_MIN_PRIOR = 1e-6
 
 
@@ -70,6 +71,63 @@ def compute_root_z_prior_and_geom(
     return z_prior, log_z_prior, geom_feat
 
 
+def compute_rho_prior_and_geom(
+    hand_bbox: torch.Tensor,
+    focal: torch.Tensor,
+    princpt: torch.Tensor,
+    prior_k: float,
+    eps: float = ROOT_Z_MIN_PRIOR,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    根据 hand bbox 和相机内参构造 rho 的显式先验与几何特征。
+
+    V1 中采用 bbox center ray 作为静态参考方向：
+
+        q_ref = [(bbox_cx - cx) / fx, (bbox_cy - cy) / fy, 1]
+        rho_prior = z_prior * ||q_ref||
+
+    其中：
+
+        z_prior = k * sqrt(fx * fy) / sqrt(bbox_w * bbox_h)
+
+    Args:
+        hand_bbox: [..., 4]，xyxy 格式
+        focal: [..., 2]，(fx, fy)
+        princpt: [..., 2]，(cx, cy)
+        prior_k: 全局尺度常数
+        eps: 数值稳定项
+
+    Returns:
+        rho_prior: [...]，正值先验距离（mm）
+        log_rho_prior: [...]，先验距离的对数
+        geom_feat: [..., 6]
+            [log_rho_prior, dx_ref, dy_ref, dw, dh, log_aspect_ratio]
+    """
+    z_prior, log_z_prior, z_geom_feat = compute_root_z_prior_and_geom(
+        hand_bbox=hand_bbox,
+        focal=focal,
+        princpt=princpt,
+        prior_k=prior_k,
+        eps=eps,
+    )
+
+    dx_ref = z_geom_feat[..., 1]
+    dy_ref = z_geom_feat[..., 2]
+    dw = z_geom_feat[..., 3]
+    dh = z_geom_feat[..., 4]
+    log_aspect_ratio = z_geom_feat[..., 5]
+
+    q_ref_norm = torch.sqrt(dx_ref ** 2 + dy_ref ** 2 + 1.0)
+    rho_prior = torch.clamp(z_prior * q_ref_norm, min=eps)
+    log_rho_prior = log_z_prior + torch.log(torch.clamp(q_ref_norm, min=eps))
+
+    geom_feat = torch.stack(
+        [log_rho_prior, dx_ref, dy_ref, dw, dh, log_aspect_ratio],
+        dim=-1,
+    )
+    return rho_prior, log_rho_prior, geom_feat
+
+
 def encode_delta_log_z_targets(
     root_z: torch.Tensor,
     log_z_prior: torch.Tensor,
@@ -127,6 +185,40 @@ def encode_delta_log_z_targets(
         "bin_center": bin_center,
         "residual": residual,
         "bin_size": torch.full_like(delta_log_z, delta),
+    }
+
+
+def encode_delta_log_rho_targets(
+    rho: torch.Tensor,
+    log_rho_prior: torch.Tensor,
+    d_min: float,
+    d_max: float,
+    num_bins: int,
+    eps: float = ROOT_Z_MIN_PRIOR,
+) -> Dict[str, torch.Tensor]:
+    """
+    将绝对 rho 编码成 prior-centered `Δlog rho` 的 multibin 监督目标。
+    """
+    if num_bins <= 0:
+        raise ValueError(f"num_bins must be positive, got {num_bins}")
+    if d_max <= d_min:
+        raise ValueError(f"d_max must be larger than d_min, got {d_min} >= {d_max}")
+
+    delta = (d_max - d_min) / float(num_bins)
+    rho = torch.clamp(rho, min=eps)
+    delta_log_rho = torch.log(rho) - log_rho_prior
+    delta_log_rho_clamped = torch.clamp(delta_log_rho, min=d_min, max=d_max)
+    bin_idx = torch.floor((delta_log_rho_clamped - d_min) / delta).long().clamp(0, num_bins - 1)
+    bin_center = d_min + (bin_idx.float() + 0.5) * delta
+    residual = (delta_log_rho_clamped - bin_center) / delta
+
+    return {
+        "delta_log_rho": delta_log_rho,
+        "delta_log_rho_clamped": delta_log_rho_clamped,
+        "bin_idx": bin_idx,
+        "bin_center": bin_center,
+        "residual": residual,
+        "bin_size": torch.full_like(delta_log_rho, delta),
     }
 
 
@@ -197,4 +289,50 @@ def decode_delta_log_z_predictions(
         "pred_z": pred_z,
         "bin_centers": bin_centers,
         "bin_size": torch.full_like(pred_log_z, delta),
+    }
+
+
+def decode_delta_log_rho_predictions(
+    rho_cls_logits: torch.Tensor,
+    rho_residuals: torch.Tensor,
+    log_rho_prior: torch.Tensor,
+    d_min: float,
+    d_max: float,
+) -> Dict[str, torch.Tensor]:
+    """
+    将 multibin 的 rho 预测恢复成绝对距离。
+    """
+    if rho_cls_logits.shape != rho_residuals.shape:
+        raise ValueError(
+            f"logits/residuals shape mismatch: {rho_cls_logits.shape} vs {rho_residuals.shape}"
+        )
+    num_bins = rho_cls_logits.shape[-1]
+    if num_bins <= 0:
+        raise ValueError(f"num_bins must be positive, got {num_bins}")
+    if d_max <= d_min:
+        raise ValueError(f"d_max must be larger than d_min, got {d_min} >= {d_max}")
+
+    delta = (d_max - d_min) / float(num_bins)
+    bin_centers = torch.linspace(
+        d_min + 0.5 * delta,
+        d_max - 0.5 * delta,
+        steps=num_bins,
+        device=rho_cls_logits.device,
+        dtype=rho_cls_logits.dtype,
+    )
+    pred_bin = torch.argmax(rho_cls_logits, dim=-1)
+    pred_residual = rho_residuals.gather(dim=-1, index=pred_bin[..., None]).squeeze(-1)
+    pred_residual = torch.clamp(pred_residual, min=-0.5, max=0.5)
+    pred_delta_log_rho = bin_centers[pred_bin] + pred_residual * delta
+    pred_log_rho = log_rho_prior + pred_delta_log_rho
+    pred_rho = torch.exp(pred_log_rho)
+
+    return {
+        "pred_bin": pred_bin,
+        "pred_residual": pred_residual,
+        "pred_delta_log_rho": pred_delta_log_rho,
+        "pred_log_rho": pred_log_rho,
+        "pred_rho": pred_rho,
+        "bin_centers": bin_centers,
+        "bin_size": torch.full_like(pred_log_rho, delta),
     }
