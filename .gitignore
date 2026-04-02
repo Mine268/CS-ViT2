@@ -239,3 +239,4 @@ checkpoint*
 *.ipynb
 tests/temp*
 temp/
+.codex
